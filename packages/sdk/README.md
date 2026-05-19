@@ -86,18 +86,18 @@ await hot.events.publish(event);
 
 `HotClient` mirrors Hot API v1 resources:
 
-- `hot.events` — publish, list, get, `callHot(fn, args)`
-- `hot.streams` — `subscribe`, `subscribePost`, `subscribeWithEvent`
-- `hot.runs` — list, get, stats
-- `hot.env` — environment info, subscribe
-- `hot.files` — list, get, download, upload, multipart uploads, delete
-- `hot.projects` — list, create, get, update, activate, deactivate, delete
-- `hot.builds` — list, upload, download, deploy, live/deployed build lookup
-- `hot.context` — list, create, update, delete project context variables
-- `hot.domains` — create, list, get, verify, delete custom domains
-- `hot.sessions` — create, list, revoke one or all
-- `hot.serviceKeys` — create, list, get, update, revoke one or all
-- `hot.org` — usage and limits
+- `hot.events` — publish, list, get, and inspect event runs (plus `callHot(fn, args)`)
+- `hot.streams` — subscribe to run streams and publish events atomically (reconnects automatically across the 5-minute SSE timeout; pass `{ reconnect: false }` to opt out)
+- `hot.runs` — list, inspect, and view run stats
+- `hot.files` — upload, download, list, and delete files (including multipart uploads)
+- `hot.projects` — create, list, update, activate, deactivate, and delete projects
+- `hot.builds` — upload, download, deploy, and look up live/deployed builds
+- `hot.context` — manage encrypted project context variables
+- `hot.domains` — register, verify, list, and delete custom domains
+- `hot.sessions` — create and revoke scoped sessions
+- `hot.serviceKeys` — create and revoke scoped service keys
+- `hot.org` — view usage and limits
+- `hot.env` — read environment info and subscribe to environment events
 
 The test suite includes an OpenAPI coverage check. Refresh the operation fixture
 from a local API server with:

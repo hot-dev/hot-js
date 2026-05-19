@@ -16,11 +16,11 @@ Requires Node 20+. Server-side only — use a backend proxy for browser apps (se
 import { HotClient } from "@hot-dev/sdk";
 
 const hot = new HotClient({
-  baseUrl: "http://localhost:4681",
   token: process.env.HOT_API_KEY!,
 });
 
 // `baseUrl` defaults to https://api.hot.dev.
+// For local development with `hot dev`, pass `baseUrl: "http://localhost:4681"`.
 
 for await (const event of hot.streams.subscribeWithEvent({
   event_type: "team-agent:ask",
@@ -79,11 +79,11 @@ Core API request and response types use the Hot API wire format (`event_type`,
 
 | Import | Purpose |
 |--------|---------|
-| `@hot-dev/sdk` | `HotClient`, types, errors |
-| `@hot-dev/sdk/streaming` | SSE parsing, run lifecycle |
-| `@hot-dev/sdk/agent` | Agent events, reply streaming, slash-command helpers |
+| `@hot-dev/sdk` | `HotClient`, core types, `HotApiError` |
+| `@hot-dev/sdk/streaming` | SSE parsing, `waitForRunResult` |
+| `@hot-dev/sdk/agent` | Agent event payloads, slash commands, reply folding |
 | `@hot-dev/sdk/webhook` | Webhook URL builder and POST helper |
-| `@hot-dev/sdk/proxy` | Next.js / BFF proxy for `subscribe-with-event` |
+| `@hot-dev/sdk/proxy` | BFF proxy handler for Next.js routes |
 
 Full API reference: [`packages/sdk/README.md`](./packages/sdk/README.md).
 
