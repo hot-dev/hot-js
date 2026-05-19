@@ -1,0 +1,74 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish-npm:
+    name: Publish to npm
+    if: github.repository == 'hot-dev/hot-js'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Validate release tag
+        id: version
+        run: |
+          VERSION=$(node -p "require('./packages/sdk/package.json').version")
+          TAG_NAME="v${VERSION}"
+
+          if [[ "${{ github.ref_type }}" == "tag" && "${{ github.ref_name }}" != "$TAG_NAME" ]]; then
+            echo "::error::Tag ${{ github.ref_name }} does not match @hot-dev/sdk package version (${TAG_NAME})"
+            exit 1
+          fi
+
+          if [[ "${{ github.ref_type }}" != "tag" ]]; then
+            echo "::error::Release workflow must run from a version tag (${TAG_NAME})"
+            exit 1
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag_name=$TAG_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Test
+        run: pnpm test
+
+      - name: Build
+        run: pnpm build
+
+      - name: Publish @hot-dev/sdk
+        working-directory: packages/sdk
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: pnpm publish --access public --provenance --no-git-checks

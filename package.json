@@ -1,0 +1,24 @@
+{
+  "name": "hot-js",
+  "private": true,
+  "description": "JavaScript/TypeScript SDK monorepo for Hot Dev",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/hot-dev/hot-js"
+  },
+  "scripts": {
+    "preinstall": "npx --yes only-allow pnpm",
+    "build": "pnpm -r run build",
+    "test": "pnpm -r run test",
+    "lint": "pnpm -r run lint",
+    "typecheck": "pnpm -r run typecheck"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.3"
+  },
+  "packageManager": "pnpm@10.11.0",
+  "engines": {
+    "node": ">=20"
+  }
+}
