@@ -11,5 +11,9 @@ export { ProjectsResource } from "./resources/projects.js";
 export { RunsResource } from "./resources/runs.js";
 export { ServiceKeysResource } from "./resources/service-keys.js";
 export { SessionsResource } from "./resources/sessions.js";
-export { StreamsResource } from "./resources/streams.js";
+export {
+  StreamsResource,
+  type SubscribeReconnectOptions,
+  type SubscribeWithEventOptions,
+} from "./resources/streams.js";
 export type * from "./types.js";
