@@ -16,7 +16,7 @@ pnpm add @hot-dev/sdk
 import { HotClient } from "@hot-dev/sdk";
 
 const hot = new HotClient({
-  baseUrl: process.env.HOT_BASE_URL ?? "http://localhost:4681",
+  baseUrl: process.env.HOT_API_URL ?? "http://localhost:4681",
   token: process.env.HOT_API_KEY!,
 });
 
@@ -170,7 +170,7 @@ import { HotClient } from "@hot-dev/sdk";
 import { createHotProxyRoute } from "@hot-dev/sdk/proxy";
 
 const hot = new HotClient({
-  baseUrl: process.env.HOT_AGENT_BASE_URL!,
+  baseUrl: process.env.HOT_API_URL!,
   token: process.env.HOT_API_KEY!,
 });
 
