@@ -20,13 +20,11 @@ export interface RunStopEvent {
 export interface RunFailEvent {
   type: "run:fail";
   run?: RunRecord;
-  error?: string;
 }
 
 export interface RunCancelEvent {
   type: "run:cancel";
   run?: RunRecord;
-  reason?: string;
 }
 
 export interface StreamDataEvent {
@@ -39,6 +37,7 @@ export interface StreamDataEvent {
 
 export interface StreamCompleteEvent {
   type: "stream:complete";
+  stream_id: string;
 }
 
 export interface UnknownStreamEvent {

@@ -47,6 +47,24 @@ function payloadText(payload: Record<string, unknown> | undefined, keys: string[
   return undefined;
 }
 
+function runResultMessage(run: Record<string, unknown> | undefined, fallback: string): string {
+  const message = resultMessage(run?.result);
+  const status = typeof run?.status === "string" ? run.status : undefined;
+  return message ?? (status ? `${fallback} (${status})` : fallback);
+}
+
+function resultMessage(value: unknown): string | undefined {
+  if (typeof value === "string" && value) return value;
+  if (typeof value !== "object" || value === null) return undefined;
+
+  const record = value as Record<string, unknown>;
+  for (const key of ["$err", "error", "message", "reason"]) {
+    const message = resultMessage(record[key]);
+    if (message) return message;
+  }
+  return undefined;
+}
+
 /**
  * Transform a Hot run-stream into agent reply chunks, filtering on
  * `{label}:reply:*` stream:data events.
@@ -136,7 +154,8 @@ export async function* foldAgentReply(
     }
 
     if (evt.type === "run:fail") {
-      failed = typeof evt.error === "string" ? evt.error : "Agent run failed.";
+      const run = (evt as { run?: Record<string, unknown> }).run;
+      failed = runResultMessage(run, "Agent run failed.");
       yield { type: "run:fail", error: failed };
       return {
         text: failed,
@@ -149,7 +168,8 @@ export async function* foldAgentReply(
     }
 
     if (evt.type === "run:cancel") {
-      failed = typeof evt.reason === "string" ? evt.reason : "Agent run was cancelled.";
+      const run = (evt as { run?: Record<string, unknown> }).run;
+      failed = runResultMessage(run, "Agent run was cancelled.");
       yield { type: "run:cancel", reason: failed };
       return {
         text: failed,

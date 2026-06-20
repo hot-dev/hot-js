@@ -69,12 +69,10 @@ export async function waitForRunResult(
         const run = lifecycle.run;
         if (run && eventIdFromRun(run) === eventId) {
           if (evt.type === "run:fail") {
-            const fail = evt as RunFailEvent;
-            throw new Error(typeof fail.error === "string" ? fail.error : "Run failed");
+            throw new Error(runResultMessage(run, "Run failed"));
           }
           if (evt.type === "run:cancel") {
-            const cancel = evt as RunCancelEvent;
-            throw new Error(typeof cancel.reason === "string" ? cancel.reason : "Run cancelled");
+            throw new Error(runResultMessage(run, "Run cancelled"));
           }
           return run;
         }
@@ -98,6 +96,22 @@ function mergeAbortSignals(signals: Array<AbortSignal | undefined>): AbortSignal
     signal.addEventListener("abort", () => controller.abort(signal.reason), { once: true });
   }
   return controller.signal;
+}
+
+function runResultMessage(run: RunRecord, fallback: string): string {
+  return resultMessage(run.result) ?? `${fallback}${run.status ? ` (${run.status})` : ""}`;
+}
+
+function resultMessage(value: unknown): string | undefined {
+  if (typeof value === "string" && value) return value;
+  if (typeof value !== "object" || value === null) return undefined;
+
+  const record = value as Record<string, unknown>;
+  for (const key of ["$err", "error", "message", "reason"]) {
+    const message = resultMessage(record[key]);
+    if (message) return message;
+  }
+  return undefined;
 }
 
 export function matchesRunEvent(event: StreamEvent, runId: string | null, eventId: string | null): boolean {

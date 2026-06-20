@@ -31,6 +31,7 @@ export interface ApiErrorBody {
     code: string;
     message: string;
     request_id?: string;
+    retry_after?: number;
   };
 }
 

@@ -99,6 +99,17 @@ await hot.events.publish(event);
 - `hot.org` — view usage and limits
 - `hot.env` — read environment info and subscribe to environment events
 
+Authenticated calls can use API keys, sessions, or service keys, but management
+endpoints such as projects, builds, files, runs, org usage, and env info require
+an API key. Sessions and service keys are permission-scoped and are intended for
+event publishing and stream reads where their permissions allow it.
+
+`hot.env.subscribe()` requires API key credentials and a live API pub/sub
+backend; local API servers without pub/sub return a 503. `subscribeWithEvent`
+reconnects across the API's 5-minute SSE timeout and stops after the first
+terminal `run:*` event it sees, so keep using the stream directly if your app
+expects multiple independent runs on the same stream.
+
 The test suite includes an OpenAPI coverage check. Refresh the operation fixture
 from a local API server with:
 

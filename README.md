@@ -9,6 +9,8 @@ npm install @hot-dev/sdk
 ```
 
 Requires Node 20+. Server-side only — use a backend proxy for browser apps (see `@hot-dev/sdk/proxy`).
+Most management endpoints require an API key; sessions and service keys are
+permission-scoped and are mainly for event publishing and stream reads.
 
 ## Quick start
 

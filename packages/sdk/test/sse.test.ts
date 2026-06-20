@@ -20,7 +20,7 @@ describe("consumeSseBlocks", () => {
   it("parses multiple blocks in one buffer", () => {
     const input = [
       'data: {"type":"event:published","event_id":"e1"}\n\n',
-      'data: {"type":"stream:complete"}\n\n',
+      'data: {"type":"stream:complete","stream_id":"s1"}\n\n',
     ].join("");
     const [events] = consumeSseBlocks(input);
     expect(events).toHaveLength(2);
