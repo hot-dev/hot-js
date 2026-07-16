@@ -95,6 +95,11 @@ Core API request and response types use the Hot API wire format (`event_type`,
 
 Full API reference: [`packages/sdk/README.md`](./packages/sdk/README.md).
 
+## Related
+
+- [Hot Dev documentation](https://hot.dev/docs)
+- [SDK docs](https://hot.dev/docs/api/sdks)
+
 ## Developing this repo
 
 ```bash
