@@ -70,6 +70,12 @@ const hot = new HotClient({
 await hot.events.publish(event);
 ```
 
+## Retries
+
+JSON requests are retried automatically (at most twice) when the API responds
+429 with a `retry_after`; other errors are thrown as-is. Streaming and raw
+requests are never retried.
+
 ## Casing policy
 
 Core API request and response types use the Hot API wire format (`event_type`,

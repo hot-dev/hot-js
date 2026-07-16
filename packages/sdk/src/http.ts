@@ -5,8 +5,14 @@ import type {
   HotClientOptions,
   ResponseMeta,
 } from "./types.js";
+import { VERSION } from "./version.js";
 
 const DEFAULT_BASE_URL = "https://api.hot.dev";
+const USER_AGENT = `hot-sdk-js/${VERSION}`;
+
+// JSON requests retry on 429 when the server supplies retry_after.
+const MAX_RETRIES = 2;
+const MAX_RETRY_AFTER_SECONDS = 30;
 
 export interface RequestOptions {
   signal?: AbortSignal;
@@ -31,6 +37,7 @@ export class HttpClient {
   authHeaders(extra?: Record<string, string>): Record<string, string> {
     return {
       Authorization: `Bearer ${this.token}`,
+      "User-Agent": USER_AGENT,
       ...extra,
     };
   }
@@ -70,27 +77,34 @@ export class HttpClient {
     const url = `${this.apiBaseUrl}${path}${query}`;
     const { query: _query, ...rest } = init ?? {};
 
-    const response = await this.fetchFn(url, {
-      ...rest,
-      method,
-      headers: this.authHeaders({
-        Accept: "application/json",
-        ...(rest.body ? { "Content-Type": "application/json" } : {}),
-        ...(rest.headers as Record<string, string> | undefined),
-      }),
-    });
+    for (let attempt = 0; ; attempt++) {
+      const response = await this.fetchFn(url, {
+        ...rest,
+        method,
+        headers: this.authHeaders({
+          Accept: "application/json",
+          ...(rest.body ? { "Content-Type": "application/json" } : {}),
+          ...(rest.headers as Record<string, string> | undefined),
+        }),
+      });
 
-    const text = await response.text();
-    if (!response.ok) {
-      throw parseApiError(response.status, text, response.headers);
+      const text = await response.text();
+      if (!response.ok) {
+        const error = parseApiError(response.status, text, response.headers);
+        if (response.status === 429 && attempt < MAX_RETRIES && error.retryAfter) {
+          await sleep(Math.min(error.retryAfter, MAX_RETRY_AFTER_SECONDS) * 1000, rest.signal);
+          continue;
+        }
+        throw error;
+      }
+      if (!text) {
+        return {
+          data: undefined,
+          meta: {} as ResponseMeta,
+        } as T;
+      }
+      return JSON.parse(text) as T;
     }
-    if (!text) {
-      return {
-        data: undefined,
-        meta: {} as ResponseMeta,
-      } as T;
-    }
-    return JSON.parse(text) as T;
   }
 
   async requestRaw(
@@ -117,6 +131,24 @@ export class HttpClient {
 
     return response;
   }
+}
+
+function sleep(ms: number, signal?: AbortSignal | null): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason ?? new Error("Aborted"));
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal?.reason ?? new Error("Aborted"));
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 export { HotApiError };

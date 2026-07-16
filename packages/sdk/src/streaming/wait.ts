@@ -107,7 +107,7 @@ function resultMessage(value: unknown): string | undefined {
   if (typeof value !== "object" || value === null) return undefined;
 
   const record = value as Record<string, unknown>;
-  for (const key of ["$err", "error", "message", "reason"]) {
+  for (const key of ["$err", "$val", "error", "message", "msg", "reason", "err"]) {
     const message = resultMessage(record[key]);
     if (message) return message;
   }

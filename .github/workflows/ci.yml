@@ -47,3 +47,29 @@ jobs:
 
       - name: Build
         run: pnpm build
+
+  integration:
+    name: Integration (hot dev)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Enable pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@10.11.0 --activate
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install hot
+        uses: hotdev/setup-hot@v1
+
+      - name: Run integration tests
+        run: ./integration/run.sh
