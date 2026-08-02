@@ -8,7 +8,8 @@ export { EventsResource } from "./resources/events.js";
 export { FilesResource } from "./resources/files.js";
 export { OrgResource } from "./resources/org.js";
 export { ProjectsResource } from "./resources/projects.js";
-export { RunsResource } from "./resources/runs.js";
+export { HotRunError, RunsResource, type WaitForRunOptions } from "./resources/runs.js";
+export { HotTaskError, TasksResource, type WaitForTaskOptions } from "./resources/tasks.js";
 export { ServiceKeysResource } from "./resources/service-keys.js";
 export { SessionsResource } from "./resources/sessions.js";
 export {

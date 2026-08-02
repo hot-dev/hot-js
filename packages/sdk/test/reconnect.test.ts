@@ -58,13 +58,13 @@ describe("streams.subscribeWithEvent reconnect", () => {
       {
         bodies: [
           'data: {"type":"event:published","stream_id":"s1","event_id":"e1","event_type":"x"}\n\n',
-          'data: {"type":"run:start","run":{"run_id":"r1"}}\n\n',
+          'data: {"type":"run:start","run":{"run_id":"r1","event_id":"e1"}}\n\n',
         ],
       },
       {
         bodies: [
-          'data: {"type":"run:start","run":{"run_id":"r1"}}\n\n',
-          'data: {"type":"run:stop","run":{"run_id":"r1","result":"done"}}\n\n',
+          'data: {"type":"run:start","run":{"run_id":"r1","event_id":"e1"}}\n\n',
+          'data: {"type":"run:stop","run":{"run_id":"r1","event_id":"e1","result":"done"}}\n\n',
         ],
       },
     ]);
@@ -92,7 +92,7 @@ describe("streams.subscribeWithEvent reconnect", () => {
       {
         bodies: [
           'data: {"type":"event:published","stream_id":"s1","event_id":"e1","event_type":"x"}\n\n',
-          'data: {"type":"run:start","run":{"run_id":"r1"}}\n\n',
+          'data: {"type":"run:start","run":{"run_id":"r1","event_id":"e1"}}\n\n',
         ],
       },
     ]);
@@ -116,15 +116,16 @@ describe("streams.subscribeWithEvent reconnect", () => {
       {
         bodies: [
           'data: {"type":"event:published","stream_id":"s1","event_id":"e1","event_type":"x"}\n\n',
-          'data: {"type":"run:start","run":{"run_id":"r1"}}\n\n',
+          'data: {"type":"run:start","run":{"run_id":"r1","event_id":"e1"}}\n\n',
         ],
       },
       {
         bodies: [
-          'data: {"type":"run:start","run":{"run_id":"r1"}}\n\n',
-          'data: {"type":"run:start","run":{"run_id":"r2"}}\n\n',
-          'data: {"type":"run:fail","run":{"run_id":"r1","result":"err"}}\n\n',
-          'data: {"type":"run:fail","run":{"run_id":"r1","result":"err"}}\n\n',
+          'data: {"type":"run:start","run":{"run_id":"r1","event_id":"e1"}}\n\n',
+          'data: {"type":"run:start","run":{"run_id":"r2","event_id":"e2"}}\n\n',
+          'data: {"type":"run:fail","run":{"run_id":"r2","event_id":"e2","result":"unrelated"}}\n\n',
+          'data: {"type":"run:fail","run":{"run_id":"r1","event_id":"e1","result":"err"}}\n\n',
+          'data: {"type":"run:fail","run":{"run_id":"r1","event_id":"e1","result":"err"}}\n\n',
         ],
       },
     ]);
@@ -141,7 +142,7 @@ describe("streams.subscribeWithEvent reconnect", () => {
       .map((e) => (e as { run?: { run_id?: string } }).run?.run_id);
 
     expect(startIds).toEqual(["r1", "r2"]);
-    expect(failIds).toEqual(["r1"]);
+    expect(failIds).toEqual(["r2", "r1"]);
   });
 
   it("throws if initial subscribe ends before event:published", async () => {

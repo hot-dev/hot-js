@@ -26,21 +26,9 @@ describe("waitForRunResult", () => {
         const url = typeof input === "string" ? input : input.url;
         const { pathname } = new URL(url);
 
-        if (init?.method === "POST" && pathname === "/v1/events") {
-          return new Response(JSON.stringify({
-            data: {
-              event_id: "e1",
-              stream_id: "s1",
-            },
-            meta: {
-              request_id: "req_123",
-              timestamp: "2026-01-01T00:00:00Z",
-            },
-          }));
-        }
-
-        if (init?.method === "GET" && pathname === "/v1/streams/s1/subscribe") {
+        if (init?.method === "POST" && pathname === "/v1/streams/subscribe-with-event") {
           return sse(
+            'data: {"type":"event:published","event_id":"e1","stream_id":"s1"}',
             'data: {"type":"run:start","run":{"run_id":"r1","event_id":"e1"}}',
             'data: {"type":"run:fail","run":{"run_id":"r1","event_id":"e1","status":"failed","result":{"$err":{"message":"boom"}}}}',
           );
@@ -61,21 +49,9 @@ describe("waitForRunResult", () => {
         const url = typeof input === "string" ? input : input.url;
         const { pathname } = new URL(url);
 
-        if (init?.method === "POST" && pathname === "/v1/events") {
-          return new Response(JSON.stringify({
-            data: {
-              event_id: "e1",
-              stream_id: "s1",
-            },
-            meta: {
-              request_id: "req_123",
-              timestamp: "2026-01-01T00:00:00Z",
-            },
-          }));
-        }
-
-        if (init?.method === "GET" && pathname === "/v1/streams/s1/subscribe") {
+        if (init?.method === "POST" && pathname === "/v1/streams/subscribe-with-event") {
           return sse(
+            'data: {"type":"event:published","event_id":"e1","stream_id":"s1"}',
             'data: {"type":"run:start","run":{"run_id":"r1","event_id":"e1"}}',
             'data: {"type":"run:fail","run":{"run_id":"r1","event_id":"e1","status":"failed","result":{"$type":"::hot::run/Failure","$origin":{"function":"::hot::exec/fail"},"$val":{"msg":"too hot","err":"too hot"}}}}',
           );

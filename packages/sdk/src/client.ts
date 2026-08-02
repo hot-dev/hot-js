@@ -11,6 +11,7 @@ import { RunsResource } from "./resources/runs.js";
 import { ServiceKeysResource } from "./resources/service-keys.js";
 import { SessionsResource } from "./resources/sessions.js";
 import { StreamsResource } from "./resources/streams.js";
+import { TasksResource } from "./resources/tasks.js";
 import type { HotClientOptions } from "./types.js";
 
 export class HotClient {
@@ -27,6 +28,7 @@ export class HotClient {
   readonly serviceKeys: ServiceKeysResource;
   readonly sessions: SessionsResource;
   readonly streams: StreamsResource;
+  readonly tasks: TasksResource;
 
   constructor(options: HotClientOptions) {
     this.http = new HttpClient(options);
@@ -42,6 +44,7 @@ export class HotClient {
     this.serviceKeys = new ServiceKeysResource(this.http);
     this.sessions = new SessionsResource(this.http);
     this.streams = new StreamsResource(this.http);
+    this.tasks = new TasksResource(this.http);
   }
 
   /** Bearer token configured on this client. */

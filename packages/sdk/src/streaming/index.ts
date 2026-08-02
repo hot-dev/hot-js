@@ -4,6 +4,7 @@ export type {
   RunFailEvent,
   RunStartEvent,
   RunStopEvent,
+  RunUpdateEvent,
   StreamDataEvent,
   StreamCompleteEvent,
   StreamEvent,

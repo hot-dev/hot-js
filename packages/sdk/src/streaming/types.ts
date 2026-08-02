@@ -1,4 +1,4 @@
-import type { RunRecord } from "../types.js";
+import type { RunRecord, TaskRecord } from "../types.js";
 
 export interface EventPublishedEvent {
   type: "event:published";
@@ -27,6 +27,11 @@ export interface RunCancelEvent {
   run?: RunRecord;
 }
 
+export interface RunUpdateEvent {
+  type: "run:update";
+  run: RunRecord;
+}
+
 export interface StreamDataEvent {
   type: "stream:data";
   run_id?: string;
@@ -40,6 +45,11 @@ export interface StreamCompleteEvent {
   stream_id: string;
 }
 
+export interface TaskUpdateEvent {
+  type: "task:update";
+  task: TaskRecord;
+}
+
 export interface UnknownStreamEvent {
   type: Exclude<
     string,
@@ -49,7 +59,9 @@ export interface UnknownStreamEvent {
     | "run:stop"
     | "run:fail"
     | "run:cancel"
+    | "run:update"
     | "stream:complete"
+    | "task:update"
   >;
   [key: string]: unknown;
 }
@@ -61,7 +73,9 @@ export type StreamEvent =
   | RunStopEvent
   | RunFailEvent
   | RunCancelEvent
+  | RunUpdateEvent
   | StreamCompleteEvent
+  | TaskUpdateEvent
   | UnknownStreamEvent;
 
 export function runIdFromEvent(event: StreamEvent): string | undefined {
@@ -73,6 +87,8 @@ export function runIdFromEvent(event: StreamEvent): string | undefined {
       const runEvent = event as RunStartEvent | RunStopEvent | RunFailEvent | RunCancelEvent;
       return runEvent.run?.run_id;
     }
+    case "run:update":
+      return (event as RunUpdateEvent).run.run_id;
     case "stream:data": {
       const data = event as StreamDataEvent;
       return data.run_id;

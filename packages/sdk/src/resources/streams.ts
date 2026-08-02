@@ -99,6 +99,7 @@ export class StreamsResource {
     const seenStart = new Set<string>();
     const seenTerminal = new Set<string>();
     let streamId: string | undefined;
+    let eventId: string | undefined;
     let attempts = 0;
 
     while (true) {
@@ -112,6 +113,7 @@ export class StreamsResource {
           if (event.type === "event:published") {
             const published = event as EventPublishedEvent;
             if (published.stream_id) streamId = published.stream_id;
+            if (published.event_id) eventId = published.event_id;
           }
 
           if (event.type === "run:start") {
@@ -129,10 +131,11 @@ export class StreamsResource {
             const runId = runEvent.run?.run_id;
             if (runId && seenTerminal.has(runId)) continue;
             if (runId) seenTerminal.add(runId);
-            terminal = true;
+            terminal = Boolean(eventId && runEvent.run?.event_id === eventId);
           }
 
           yield event;
+          if (terminal) return;
         }
       } catch (error) {
         if (!streamId || attempts >= maxAttempts) throw error;
@@ -141,6 +144,9 @@ export class StreamsResource {
       if (terminal) return;
       if (!streamId) {
         throw new Error("stream ended before event:published was received");
+      }
+      if (attempts >= maxAttempts) {
+        throw new Error("stream ended before the published event's run completed");
       }
 
       attempts += 1;

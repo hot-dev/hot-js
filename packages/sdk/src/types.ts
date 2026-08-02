@@ -62,6 +62,34 @@ export interface EventRecord {
   created_at: string;
 }
 
+export type TaskStatus =
+  | "queued"
+  | "running"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "timed_out";
+
+export interface TaskRecord {
+  task_id: string;
+  env_id: string;
+  stream_id: string;
+  build_id: string;
+  run_id?: string | null;
+  origin_run_id?: string | null;
+  function_name: string;
+  task_type: string;
+  status: TaskStatus;
+  start_time?: string | null;
+  stop_time?: string | null;
+  duration_ms?: number | null;
+  result?: unknown;
+  timeout_ms: number;
+  retry_attempt: number;
+  next_retry_at?: string | null;
+  created_at: string;
+}
+
 export interface ProjectRecord {
   project_id: string;
   env_id: string;

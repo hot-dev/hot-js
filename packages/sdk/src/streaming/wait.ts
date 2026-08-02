@@ -13,9 +13,12 @@ import { eventIdFromRun, runIdFromEvent } from "./types.js";
 
 export interface WaitForRunOptions {
   timeoutMs?: number;
+  maxReconnectAttempts?: number;
   signal?: AbortSignal;
   onChunk?: (text: string) => void;
 }
+
+class RunTerminalError extends Error {}
 
 /**
  * Subscribe to a stream and wait for the run associated with `eventId`.
@@ -38,54 +41,72 @@ export async function waitForRunResult(
 
   let currentRunId: string | null = null;
 
+  let reconnectAttempts = 0;
   try {
-    for await (const evt of consumeSseResponse(async () => {
-      return http.requestRaw("GET", `/streams/${streamId}/subscribe`, {
-        headers: { Accept: "text/event-stream" },
-        signal,
-      });
-    }, { signal })) {
-      if (evt.type === "run:start") {
-        const run = (evt as RunStartEvent).run;
-        if (run && eventIdFromRun(run) === eventId) {
-          currentRunId = run.run_id;
-        }
-      }
+    while (true) {
+      try {
+        for await (const evt of consumeSseResponse(
+          async () => {
+            return http.requestRaw("GET", `/streams/${streamId}/subscribe`, {
+              headers: { Accept: "text/event-stream" },
+              signal,
+            });
+          },
+          { signal },
+        )) {
+          if (evt.type === "run:start") {
+            const run = (evt as RunStartEvent).run;
+            if (run && eventIdFromRun(run) === eventId) {
+              currentRunId = run.run_id;
+            }
+          }
 
-      if (evt.type === "stream:data") {
-        const data = evt as StreamDataEvent;
-        // Stream data does not carry event_id, so only forward chunks once
-        // run:start has correlated this request to a concrete run_id.
-        if (currentRunId && data.run_id === currentRunId) {
-          const text = data.payload?.text;
-          if (typeof text === "string" && options?.onChunk) {
-            options.onChunk(text);
+          if (evt.type === "stream:data") {
+            const data = evt as StreamDataEvent;
+            // Stream data does not carry event_id, so only forward chunks once
+            // run:start has correlated this request to a concrete run_id.
+            if (currentRunId && data.run_id === currentRunId) {
+              const text = data.payload?.text;
+              if (typeof text === "string" && options?.onChunk) {
+                options.onChunk(text);
+              }
+            }
           }
-        }
-      }
 
-      if (evt.type === "run:stop" || evt.type === "run:fail" || evt.type === "run:cancel") {
-        const lifecycle = evt as RunStopEvent | RunFailEvent | RunCancelEvent;
-        const run = lifecycle.run;
-        if (run && eventIdFromRun(run) === eventId) {
-          if (evt.type === "run:fail") {
-            throw new Error(runResultMessage(run, "Run failed"));
+          if (
+            evt.type === "run:stop" ||
+            evt.type === "run:fail" ||
+            evt.type === "run:cancel"
+          ) {
+            const lifecycle = evt as RunStopEvent | RunFailEvent | RunCancelEvent;
+            const run = lifecycle.run;
+            if (run && eventIdFromRun(run) === eventId) {
+              if (evt.type === "run:fail") {
+                throw new RunTerminalError(runResultMessage(run, "Run failed"));
+              }
+              if (evt.type === "run:cancel") {
+                throw new RunTerminalError(runResultMessage(run, "Run cancelled"));
+              }
+              return run;
+            }
           }
-          if (evt.type === "run:cancel") {
-            throw new Error(runResultMessage(run, "Run cancelled"));
-          }
-          return run;
         }
+      } catch (error) {
+        if (error instanceof RunTerminalError) throw error;
+        if (signal.aborted) throw error;
+        if (reconnectAttempts >= (options?.maxReconnectAttempts ?? 5)) throw error;
       }
+      if (reconnectAttempts >= (options?.maxReconnectAttempts ?? 5)) {
+        throw new Error("Stream ended before run completed");
+      }
+      reconnectAttempts += 1;
     }
-
-    throw new Error("Stream ended before run completed");
   } finally {
     clearTimeout(timeout);
   }
 }
 
-function mergeAbortSignals(signals: Array<AbortSignal | undefined>): AbortSignal {
+export function mergeAbortSignals(signals: Array<AbortSignal | undefined>): AbortSignal {
   const controller = new AbortController();
   for (const signal of signals) {
     if (!signal) continue;
@@ -98,11 +119,11 @@ function mergeAbortSignals(signals: Array<AbortSignal | undefined>): AbortSignal
   return controller.signal;
 }
 
-function runResultMessage(run: RunRecord, fallback: string): string {
+export function runResultMessage(run: RunRecord, fallback: string): string {
   return resultMessage(run.result) ?? `${fallback}${run.status ? ` (${run.status})` : ""}`;
 }
 
-function resultMessage(value: unknown): string | undefined {
+export function resultMessage(value: unknown): string | undefined {
   if (typeof value === "string" && value) return value;
   if (typeof value !== "object" || value === null) return undefined;
 

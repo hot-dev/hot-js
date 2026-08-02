@@ -76,7 +76,7 @@ await hot.events.publish(event);
 
 | Import | Purpose |
 |--------|---------|
-| `@hot-dev/sdk` | `HotClient`, core types, `HotApiError` |
+| `@hot-dev/sdk` | `HotClient`, core types, `HotApiError`, `HotRunError`, `HotTaskError` |
 | `@hot-dev/sdk/streaming` | SSE parsing, `waitForRunResult` |
 | `@hot-dev/sdk/agent` | Agent event payloads, slash commands, reply folding |
 | `@hot-dev/sdk/webhook` | Webhook URL builder and POST helper |
@@ -87,8 +87,9 @@ await hot.events.publish(event);
 `HotClient` mirrors Hot API v1 resources:
 
 - `hot.events` — publish, list, get, and inspect event runs (plus `callHot(fn, args)`)
-- `hot.streams` — subscribe to run streams and publish events atomically (reconnects automatically across the 5-minute SSE timeout; pass `{ reconnect: false }` to opt out)
-- `hot.runs` — list, inspect, and view run stats
+- `hot.streams` — subscribe to run and task updates and publish events atomically (reconnects automatically across the 5-minute SSE timeout; pass `{ reconnect: false }` to opt out)
+- `hot.runs` — list, inspect, subscribe to, and wait for durable runs
+- `hot.tasks` — get, subscribe to, and wait for durable background tasks
 - `hot.files` — upload, download, list, and delete files (including multipart uploads)
 - `hot.projects` — create, list, update, activate, deactivate, and delete projects
 - `hot.builds` — upload, download, deploy, and look up live/deployed builds
@@ -106,9 +107,30 @@ event publishing and stream reads where their permissions allow it.
 
 `hot.env.subscribe()` requires API key credentials and a live API pub/sub
 backend; local API servers without pub/sub return a 503. `subscribeWithEvent`
-reconnects across the API's 5-minute SSE timeout and stops after the first
-terminal `run:*` event it sees, so keep using the stream directly if your app
-expects multiple independent runs on the same stream.
+reconnects across the API's 5-minute SSE timeout and stops after the terminal
+run correlated to the event it published. Unrelated runs on the same stream do
+not end the iterator.
+
+When code has a run id but does not need the full stream, wait on its durable
+terminal snapshot:
+
+```typescript
+const run = await hot.runs.wait(runId, { timeoutMs: 300_000 });
+console.log(run.result);
+```
+
+When a run returns a background task id, wait without keeping that run alive:
+
+```typescript
+const task = await hot.tasks.wait(taskId, { timeoutMs: 300_000 });
+console.log(task.result);
+```
+
+The task waiter receives the latest persisted state first and reconnects, so it
+cannot miss a task that completed before subscription. A failed, cancelled, or
+timed-out task throws `HotTaskError` with the final task record.
+The task's parent stream also emits durable `task:update` events, which is
+useful when one subscription needs to coordinate several tasks.
 
 The test suite includes an OpenAPI coverage check. Refresh the operation fixture
 from a local API server with:
