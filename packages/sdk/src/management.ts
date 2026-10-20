@@ -17,20 +17,20 @@ export class HotManagementClient {
   /** Lists only authorized children; returns { children, total }, not a list envelope. */
   async listChildren(query?: ListQuery, options?: RequestOptions): Promise<ChildList> {
     return (await this.http.requestJson<ChildList>("GET", "/management/children", {
-      query, signal: options?.signal,
+      query, signal: options?.signal, headers: options?.headers,
     })).data;
   }
 
   /** idempotency_key must remain stable when retrying child provisioning. */
   async createChild(body: CreateChildRequest, options?: RequestOptions): Promise<ChildProvisioned> {
     return (await this.http.requestJson<ChildProvisioned>("POST", "/management/children", {
-      body: JSON.stringify(body), signal: options?.signal,
+      body: JSON.stringify(body), signal: options?.signal, headers: options?.headers,
     })).data;
   }
 
   async setChildState(childId: string, state: OrgLifecycle, options?: RequestOptions): Promise<void> {
     await this.http.requestJson("PATCH", `/management/children/${encodeURIComponent(childId)}/state`, {
-      body: JSON.stringify({ state }), signal: options?.signal,
+      body: JSON.stringify({ state }), signal: options?.signal, headers: options?.headers,
     });
   }
 
@@ -38,7 +38,7 @@ export class HotManagementClient {
     options?: RequestOptions): Promise<EnvInfo> {
     return (await this.http.requestJson<EnvInfo>("POST",
       `/management/children/${encodeURIComponent(childId)}/environments`, {
-        body: JSON.stringify(body), signal: options?.signal,
+        body: JSON.stringify(body), signal: options?.signal, headers: options?.headers,
       })).data;
   }
 
@@ -46,14 +46,14 @@ export class HotManagementClient {
     options?: RequestOptions): Promise<IssuedRuntimeKey> {
     return (await this.http.requestJson<IssuedRuntimeKey>("POST",
       `/management/children/${encodeURIComponent(childId)}/environments/${encodeURIComponent(envId)}/api-keys`, {
-        body: JSON.stringify(body), signal: options?.signal,
+        body: JSON.stringify(body), signal: options?.signal, headers: options?.headers,
       })).data;
   }
 
   /** Account aggregate; requires usage:read and explicit all_children authority. */
   async usage(options?: RequestOptions): Promise<AccountUsage> {
     return (await this.http.requestJson<AccountUsage>("GET", "/management/usage", {
-      signal: options?.signal,
+      signal: options?.signal, headers: options?.headers,
     })).data;
   }
 }

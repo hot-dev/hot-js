@@ -11,6 +11,26 @@ function jsonRequest(body: unknown): Request {
 }
 
 describe("createHotProxyRoute", () => {
+  it("keeps the configured credential when a browser supplies another org or env", async () => {
+    const hot = new HotClient({
+      baseUrl: "http://hot.test",
+      token: "child-a-key",
+      fetch: async (url, init) => {
+        expect(String(url)).toBe("http://hot.test/v1/streams/subscribe-with-event");
+        expect(new Headers(init?.headers).get("Authorization")).toBe("Bearer child-a-key");
+        expect(JSON.parse(String(init?.body))).toEqual({
+          event_type: "sdk:echo", event_data: { org_id: "user-owned-data" },
+        });
+        return new Response("data: {}\n\n");
+      },
+    });
+    const response = await createHotProxyRoute(hot)(jsonRequest({
+      event_type: "sdk:echo", event_data: { org_id: "user-owned-data" },
+      org_id: "child-b", env_id: "child-b-env", token: "child-b-key",
+    }));
+    expect(response.status).toBe(200);
+  });
+
   it("returns a clear error when token is missing", async () => {
     const hot = new HotClient({
       baseUrl: "http://hot.test",
