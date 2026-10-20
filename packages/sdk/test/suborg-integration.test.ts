@@ -1,16 +1,15 @@
-import { readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { HotClient, HotManagementClient } from "../src/index.js";
 
-const fixturePath = process.env.HOT_TEST_SUBORG_FIXTURE;
+const fixtureData = process.env.HOT_TEST_SUBORG_FIXTURE;
 const baseUrl = process.env.HOT_TEST_BASE_URL;
 interface Fixture { root_org_id: string; root_token: string; management_token: string;
   revoked: string[]; narrowed: string[] }
-function fixture(): Fixture { return JSON.parse(readFileSync(fixturePath!, "utf8")); }
+function fixture(): Fixture { return JSON.parse(fixtureData!); }
 function runtime(token: string): HotClient { return new HotClient({ token, baseUrl }); }
 
-describe.skipIf(!fixturePath)("sub-org integration", () => {
+describe.skipIf(!fixtureData)("sub-org integration", () => {
   it("provisions isolated children and environment credentials", { timeout: 90_000 }, async () => {
     const conf = fixture();
     const management = new HotManagementClient({ token: conf.management_token, baseUrl });
