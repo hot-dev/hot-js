@@ -1,3 +1,4 @@
+import { isAuthorizationError } from "../errors.js";
 import type { HttpClient } from "../http.js";
 import type { RunRecord } from "../types.js";
 import { consumeSseResponse } from "./sse.js";
@@ -92,6 +93,7 @@ export async function waitForRunResult(
           }
         }
       } catch (error) {
+        if (isAuthorizationError(error)) throw error;
         if (error instanceof RunTerminalError) throw error;
         if (signal.aborted) throw error;
         if (reconnectAttempts >= (options?.maxReconnectAttempts ?? 5)) throw error;
