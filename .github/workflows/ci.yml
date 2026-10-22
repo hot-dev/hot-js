@@ -25,7 +25,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v5
         with:
-          node-version: 24
+          node-version: '24.22.1'
           package-manager-cache: false
 
       - name: Enable pnpm
@@ -57,7 +57,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v5
         with:
-          node-version: 24
+          node-version: '24.22.1'
           package-manager-cache: false
 
       - name: Enable pnpm
