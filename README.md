@@ -8,7 +8,7 @@ Official JavaScript/TypeScript SDK for the [Hot Dev](https://hot.dev) API.
 npm install @hot-dev/sdk
 ```
 
-Requires Node 20+. Server-side only — use a backend proxy for browser apps (see `@hot-dev/sdk/proxy`).
+The published SDK supports Node 20+. Development and CI use Node 24.22.1, pinned in `.node-version`. Server-side only — use a backend proxy for browser apps (see `@hot-dev/sdk/proxy`).
 Most management endpoints require an API key; sessions and service keys are
 permission-scoped and are mainly for event publishing and stream reads.
 
