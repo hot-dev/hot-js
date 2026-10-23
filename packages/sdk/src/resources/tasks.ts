@@ -1,3 +1,4 @@
+import { isAuthorizationError } from "../errors.js";
 import type { HttpClient } from "../http.js";
 import { consumeSseResponse } from "../streaming/sse.js";
 import type { TaskUpdateEvent } from "../streaming/types.js";
@@ -68,6 +69,7 @@ export class TasksResource {
             }
           }
         } catch (error) {
+        if (isAuthorizationError(error)) throw error;
           if (error instanceof HotTaskError || signal.aborted) throw error;
           if (reconnectAttempts >= (options?.maxReconnectAttempts ?? 5)) throw error;
         }

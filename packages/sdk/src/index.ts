@@ -1,4 +1,5 @@
 export { HotClient } from "./client.js";
+export { HotManagementClient } from "./management.js";
 export { HotApiError, isHotApiError } from "./errors.js";
 export { BuildsResource, type UploadBuildOptions } from "./resources/builds.js";
 export { ContextResource } from "./resources/context.js";

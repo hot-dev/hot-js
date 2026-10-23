@@ -1,3 +1,4 @@
+import { isAuthorizationError } from "../errors.js";
 import type { HttpClient } from "../http.js";
 import { consumeSseResponse } from "../streaming/sse.js";
 import type { RunUpdateEvent } from "../streaming/types.js";
@@ -82,6 +83,7 @@ export class RunsResource {
             }
           }
         } catch (error) {
+        if (isAuthorizationError(error)) throw error;
           if (error instanceof HotRunError || signal.aborted) throw error;
           if (reconnectAttempts >= (options?.maxReconnectAttempts ?? 5)) throw error;
         }

@@ -1,3 +1,4 @@
+import { isAuthorizationError } from "../errors.js";
 import type { HttpClient } from "../http.js";
 import type {
   SubscribeWithEventParams,
@@ -138,6 +139,7 @@ export class StreamsResource {
           if (terminal) return;
         }
       } catch (error) {
+        if (isAuthorizationError(error)) throw error;
         if (!streamId || attempts >= maxAttempts) throw error;
       }
 

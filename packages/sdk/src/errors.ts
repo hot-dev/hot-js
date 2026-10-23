@@ -66,3 +66,8 @@ function retryAfterFromHeader(headers: Headers | undefined): number | undefined 
   const seconds = Number(value);
   return Number.isFinite(seconds) ? seconds : undefined;
 }
+
+/** Permanent authorization failures must not be retried by SSE reconnect loops. */
+export function isAuthorizationError(error: unknown): boolean {
+  return isHotApiError(error) && (error.status === 401 || error.status === 403);
+}

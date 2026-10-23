@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { HotClient } from "../src/client.js";
+import { HotManagementClient } from "../src/management.js";
 import operations from "./fixtures/openapi-operations.json";
 
 interface OpenApiOperation {
@@ -15,6 +16,13 @@ type CoverageEntry =
     };
 
 const coverage: Record<string, CoverageEntry> = {
+  "GET /v1/management/children": { sdk: "management.listChildren" },
+  "POST /v1/management/children": { sdk: "management.createChild" },
+  "PATCH /v1/management/children/{child_id}/state": { sdk: "management.setChildState" },
+  "POST /v1/management/children/{child_id}/environments": { sdk: "management.createEnvironment" },
+  "POST /v1/management/children/{child_id}/environments/{env_id}/api-keys": { sdk: "management.createApiKey" },
+  "GET /v1/management/usage": { sdk: "management.usage" },
+
   "GET /status": {
     ignored: true,
     reason: "Public health endpoint, not part of authenticated SDK Layer 1 resources.",
@@ -125,7 +133,8 @@ function operationKey(operation: OpenApiOperation): string {
 }
 
 function resolveSdkMethod(path: string): unknown {
-  let value: unknown = hot;
+  let value: unknown = path.startsWith("management.")
+    ? { management: new HotManagementClient({ token: "hm_test" }) } : hot;
   for (const part of path.split(".")) {
     if (typeof value !== "object" || value === null || !(part in value)) {
       return undefined;

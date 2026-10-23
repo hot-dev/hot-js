@@ -52,6 +52,11 @@ export interface HotClientOptions {
   fetch?: typeof fetch;
 }
 
+export interface HotManagementClientOptions extends Omit<HotClientOptions, "token"> {
+  /** Root hm_ management credential. Server-side only. */
+  token: string;
+}
+
 export interface EventRecord {
   event_id: string;
   env_id: string;
@@ -298,8 +303,12 @@ export type EnvSubscriptionEvent =
       [key: string]: unknown;
     };
 
+/** Environment consumption compared to shared billing-account limits. */
 export interface OrgUsage {
   org_id: string;
+  env_id: string;
+  usage_scope: "environment";
+  limits_scope: "billing_account";
   usage: {
     runs_this_period: number;
     file_storage_bytes: number;
@@ -528,4 +537,53 @@ export interface WebhookResponse {
   message_id?: string;
   queued?: boolean;
   error?: string;
+}
+
+export type OrgLifecycle = "active" | "suspended" | "archived";
+
+export interface ChildOrgRecord {
+  org_id: string;
+  parent_org_id: string;
+  external_id: string | null;
+  lifecycle_state: OrgLifecycle;
+  name: string;
+  slug: string;
+  org_type: "organization";
+  active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ChildList {
+  children: ChildOrgRecord[];
+  total: number;
+}
+
+export interface CreateChildRequest {
+  name: string;
+  slug: string;
+  external_id?: string;
+  idempotency_key: string;
+}
+
+export interface ChildProvisioned {
+  org: ChildOrgRecord;
+  env_id: string;
+  created: boolean;
+}
+
+export interface CreateEnvironmentRequest { name: string }
+export interface IssueRuntimeKeyRequest { description: string; permissions: Permissions }
+export interface IssuedRuntimeKey {
+  api_key_id: string;
+  org_id: string;
+  env_id: string;
+  token: string;
+  permissions: Permissions;
+}
+export interface AccountUsage {
+  root_org_id: string;
+  period_start: string;
+  period_end: string;
+  usage: JsonObject;
 }
