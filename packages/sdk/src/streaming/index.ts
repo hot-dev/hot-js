@@ -1,5 +1,7 @@
 export type {
   EventPublishedEvent,
+  KeepaliveEvent,
+  KnownStreamEvent,
   RunCancelEvent,
   RunFailEvent,
   RunStartEvent,
@@ -11,5 +13,6 @@ export type {
   UnknownStreamEvent,
 } from "./types.js";
 
-export { consumeSseBlocks, consumeSseResponse } from "./sse.js";
-export { waitForRunResult } from "./wait.js";
+export { isRunTerminalEvent, isStreamEvent, toStreamEvent } from "./types.js";
+export { consumeSseBlocks, consumeSseResponse, StreamIdleError } from "./sse.js";
+export { waitForRunResult, type WaitForRunOptions } from "./wait.js";

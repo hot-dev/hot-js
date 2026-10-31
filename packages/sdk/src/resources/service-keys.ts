@@ -53,7 +53,7 @@ export class ServiceKeysResource {
   }
 
   async revoke(serviceKeyId: string, options?: { signal?: AbortSignal }) {
-    await this.http.requestRaw("DELETE", `/service-keys/${enc(serviceKeyId)}`, {
+    await this.http.requestVoid("DELETE", `/service-keys/${enc(serviceKeyId)}`, {
       signal: options?.signal,
     });
   }

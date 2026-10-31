@@ -1,18 +1,23 @@
 import type { HttpClient } from "../http.js";
+import { StreamsResource } from "../resources/streams.js";
+import { mergeAbortSignals, timeoutError } from "../retry.js";
 import type { RunRecord } from "../types.js";
-import { consumeSseResponse } from "./sse.js";
-import type {
-  RunCancelEvent,
-  RunFailEvent,
-  RunStartEvent,
-  RunStopEvent,
-  StreamDataEvent,
-  StreamEvent,
-} from "./types.js";
-import { eventIdFromRun, runIdFromEvent } from "./types.js";
+import {
+  DEFAULT_MAX_RECONNECT_ATTEMPTS,
+  followStream,
+  Reconnector,
+  RunCorrelator,
+  type RunOutcomeEvent,
+  STREAM_IDLE_TIMEOUT_MS,
+} from "./durable.js";
+import type { StreamDataEvent, StreamEvent } from "./types.js";
+import { eventIdFromRun, isRunTerminalEvent, runIdFromEvent } from "./types.js";
+
+export { mergeAbortSignals } from "../retry.js";
 
 export interface WaitForRunOptions {
   timeoutMs?: number;
+  /** Consecutive failed connections tolerated. Default 5; rollovers reset it. */
   maxReconnectAttempts?: number;
   signal?: AbortSignal;
   onChunk?: (text: string) => void;
@@ -22,7 +27,9 @@ class RunTerminalError extends Error {}
 
 /**
  * Subscribe to a stream and wait for the run associated with `eventId`.
- * Optionally invoke `onChunk` for `ai:delta` stream:data events.
+ * Optionally invoke `onChunk` for `stream:data` events whose payload has
+ * `text`, in order, including chunks that arrive before `run:start`. A failed
+ * attempt that will be retried (`pending_retry`) is followed to its retry run.
  */
 export async function waitForRunResult(
   http: HttpClient,
@@ -30,93 +37,74 @@ export async function waitForRunResult(
   eventId: string,
   options?: WaitForRunOptions,
 ): Promise<RunRecord> {
+  const streams = new StreamsResource(http);
+  return waitForCorrelatedRun(
+    (signal, reconnector, correlator) => followStream({
+      streamId,
+      signal,
+      open: (connection) => streams.subscribeOnce(streamId, { signal: connection }, STREAM_IDLE_TIMEOUT_MS),
+      reopen: (id, connection) => streams.subscribeOnce(id, { signal: connection }, STREAM_IDLE_TIMEOUT_MS),
+      correlator,
+      reconnector,
+    }),
+    new RunCorrelator(eventId),
+    "Timeout waiting for run result",
+    options,
+  );
+}
+
+/** @internal Shared by `waitForRunResult` and `events.callHot`. */
+export async function waitForCorrelatedRun(
+  follow: (
+    signal: AbortSignal,
+    reconnector: Reconnector,
+    correlator: RunCorrelator,
+  ) => AsyncGenerator<StreamEvent, void, undefined>,
+  correlator: RunCorrelator,
+  timeoutMessage: string,
+  options?: WaitForRunOptions,
+): Promise<RunRecord> {
   const timeoutMs = options?.timeoutMs ?? 60_000;
   const controller = new AbortController();
-  const timeout = setTimeout(
-    () => controller.abort(new Error("Timeout waiting for run result")),
-    timeoutMs,
-  );
-
+  const timeout = setTimeout(() => controller.abort(timeoutError(timeoutMessage)), timeoutMs);
   const signal = mergeAbortSignals([options?.signal, controller.signal]);
-
-  let currentRunId: string | null = null;
-
-  let reconnectAttempts = 0;
-  try {
-    while (true) {
-      try {
-        for await (const evt of consumeSseResponse(
-          async () => {
-            return http.requestRaw("GET", `/streams/${streamId}/subscribe`, {
-              headers: { Accept: "text/event-stream" },
-              signal,
-            });
-          },
-          { signal },
-        )) {
-          if (evt.type === "run:start") {
-            const run = (evt as RunStartEvent).run;
-            if (run && eventIdFromRun(run) === eventId) {
-              currentRunId = run.run_id;
-            }
-          }
-
-          if (evt.type === "stream:data") {
-            const data = evt as StreamDataEvent;
-            // Stream data does not carry event_id, so only forward chunks once
-            // run:start has correlated this request to a concrete run_id.
-            if (currentRunId && data.run_id === currentRunId) {
-              const text = data.payload?.text;
-              if (typeof text === "string" && options?.onChunk) {
-                options.onChunk(text);
-              }
-            }
-          }
-
-          if (
-            evt.type === "run:stop" ||
-            evt.type === "run:fail" ||
-            evt.type === "run:cancel"
-          ) {
-            const lifecycle = evt as RunStopEvent | RunFailEvent | RunCancelEvent;
-            const run = lifecycle.run;
-            if (run && eventIdFromRun(run) === eventId) {
-              if (evt.type === "run:fail") {
-                throw new RunTerminalError(runResultMessage(run, "Run failed"));
-              }
-              if (evt.type === "run:cancel") {
-                throw new RunTerminalError(runResultMessage(run, "Run cancelled"));
-              }
-              return run;
-            }
-          }
-        }
-      } catch (error) {
-        if (error instanceof RunTerminalError) throw error;
-        if (signal.aborted) throw error;
-        if (reconnectAttempts >= (options?.maxReconnectAttempts ?? 5)) throw error;
-      }
-      if (reconnectAttempts >= (options?.maxReconnectAttempts ?? 5)) {
-        throw new Error("Stream ended before run completed");
-      }
-      reconnectAttempts += 1;
+  const reconnector = new Reconnector({
+    maxAttempts: options?.maxReconnectAttempts ?? DEFAULT_MAX_RECONNECT_ATTEMPTS,
+    signal,
+    deadline: Date.now() + timeoutMs,
+    timeoutMessage,
+    exhaustedMessage: "Stream ended before run completed",
+  });
+  const deliver = (chunks: StreamDataEvent[]) => {
+    for (const chunk of chunks) {
+      const text = chunk.payload?.text;
+      if (typeof text === "string") options?.onChunk?.(text);
     }
+  };
+
+  try {
+    for await (const evt of follow(signal, reconnector, correlator)) {
+      if (evt.type === "stream:data") deliver(correlator.data(evt));
+      else deliver(correlator.takeReady());
+    }
+  } catch (error) {
+    // At the deadline, a failure that was waiting for its retry stands.
+    if (controller.signal.aborted && !options?.signal?.aborted && correlator.expire()) {
+      return settle(correlator.outcome!);
+    }
+    throw signal.aborted ? signal.reason ?? error : error;
   } finally {
     clearTimeout(timeout);
   }
+  if (!correlator.outcome) throw new Error("Stream ended before run completed");
+  return settle(correlator.outcome);
 }
 
-export function mergeAbortSignals(signals: Array<AbortSignal | undefined>): AbortSignal {
-  const controller = new AbortController();
-  for (const signal of signals) {
-    if (!signal) continue;
-    if (signal.aborted) {
-      controller.abort(signal.reason);
-      return controller.signal;
-    }
-    signal.addEventListener("abort", () => controller.abort(signal.reason), { once: true });
-  }
-  return controller.signal;
+function settle(outcome: RunOutcomeEvent): RunRecord {
+  const run = outcome.run!;
+  if (outcome.type === "run:fail") throw new RunTerminalError(runResultMessage(run, "Run failed"));
+  if (outcome.type === "run:cancel") throw new RunTerminalError(runResultMessage(run, "Run cancelled"));
+  return run;
 }
 
 export function runResultMessage(run: RunRecord, fallback: string): string {
@@ -136,9 +124,8 @@ export function resultMessage(value: unknown): string | undefined {
 }
 
 export function matchesRunEvent(event: StreamEvent, runId: string | null, eventId: string | null): boolean {
-  if (event.type === "run:stop" || event.type === "run:fail" || event.type === "run:cancel") {
-    const lifecycle = event as RunStopEvent | RunFailEvent | RunCancelEvent;
-    const runEventId = eventIdFromRun(lifecycle.run);
+  if (isRunTerminalEvent(event)) {
+    const runEventId = eventIdFromRun(event.run);
     const rid = runIdFromEvent(event);
     if (eventId && runEventId === eventId) return true;
     if (runId && rid === runId) return true;

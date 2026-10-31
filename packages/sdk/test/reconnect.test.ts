@@ -31,7 +31,7 @@ function clientWithResponses(responses: FakeResponse[]) {
     baseUrl: "http://hot.test",
     token: "test-token",
     fetch: async (input, init) => {
-      const url = typeof input === "string" ? input : input.url;
+      const url = input instanceof Request ? input.url : String(input);
       calls.push({
         method: init?.method ?? "GET",
         pathname: new URL(url).pathname,

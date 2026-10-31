@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { HotClient, HotTaskError } from "../src/index.js";
+import { HotClient } from "../src/index.js";
 
 function taskEvent(status: string, result?: unknown): Response {
   const task = {
@@ -61,6 +61,6 @@ describe("tasks", () => {
       name: "HotTaskError",
       message: "boom",
       task: { task_id: "t1", status: "failed" },
-    } satisfies Partial<HotTaskError>);
+    });
   });
 });

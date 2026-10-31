@@ -32,7 +32,7 @@ export class DomainsResource {
   }
 
   async delete(domainId: string, options?: { signal?: AbortSignal }) {
-    await this.http.requestRaw("DELETE", `/domains/${enc(domainId)}`, {
+    await this.http.requestVoid("DELETE", `/domains/${enc(domainId)}`, {
       signal: options?.signal,
     });
   }

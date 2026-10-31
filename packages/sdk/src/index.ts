@@ -1,5 +1,6 @@
-export { HotClient } from "./client.js";
-export { HotApiError, isHotApiError } from "./errors.js";
+export { HotClient, type HotRequestInit } from "./client.js";
+export { HotApiError, HotKeyScopeError, isHotApiError, type KeyScope } from "./errors.js";
+export type { HttpClient, RequestOptions } from "./http.js";
 export { BuildsResource, type UploadBuildOptions } from "./resources/builds.js";
 export { ContextResource } from "./resources/context.js";
 export { DomainsResource } from "./resources/domains.js";
@@ -7,6 +8,7 @@ export { EnvResource } from "./resources/env.js";
 export { EventsResource } from "./resources/events.js";
 export { FilesResource } from "./resources/files.js";
 export { OrgResource } from "./resources/org.js";
+export { ApiKeysResource, OrgEnvScope, OrgsResource } from "./resources/orgs.js";
 export { ProjectsResource } from "./resources/projects.js";
 export { HotRunError, RunsResource, type WaitForRunOptions } from "./resources/runs.js";
 export { HotTaskError, TasksResource, type WaitForTaskOptions } from "./resources/tasks.js";

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { HotClient, HotRunError } from "../src/index.js";
+import { HotClient } from "../src/index.js";
 
 function runEvent(status: string, result?: unknown): Response {
   const run = {
@@ -64,6 +64,6 @@ describe("runs", () => {
       name: "HotRunError",
       message: "boom",
       run: { run_id: "r1", status: "failed" },
-    } satisfies Partial<HotRunError>);
+    });
   });
 });

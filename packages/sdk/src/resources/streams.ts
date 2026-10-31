@@ -1,44 +1,57 @@
 import type { HttpClient } from "../http.js";
 import type {
+  CallPurgeResponse,
   SubscribeWithEventParams,
   SubscribeWithEventRequest,
 } from "../types.js";
+import {
+  DEFAULT_MAX_RECONNECT_ATTEMPTS,
+  followStream,
+  Reconnector,
+  RunCorrelator,
+  STREAM_IDLE_TIMEOUT_MS,
+} from "../streaming/durable.js";
 import { consumeSseResponse } from "../streaming/sse.js";
-import type {
-  EventPublishedEvent,
-  RunCancelEvent,
-  RunFailEvent,
-  RunStartEvent,
-  RunStopEvent,
-  StreamEvent,
-} from "../streaming/types.js";
+import type { StreamEvent } from "../streaming/types.js";
+
+const enc = encodeURIComponent;
 
 /**
  * Options for the auto-reconnect behavior of `subscribeWithEvent`.
  *
- * The Hot API closes SSE subscriptions after 5 minutes of idle time regardless
- * of run state. When `reconnect` is enabled (the default), the SDK resubscribes
- * to the same `stream_id` and continues yielding events until a terminal
- * `run:stop`, `run:fail`, or `run:cancel` arrives.
+ * The Hot API closes every SSE subscription 5 minutes after it opens (with a
+ * `stream:complete` event), whatever the run state. When `reconnect` is
+ * enabled (the default), the SDK resubscribes to the same `stream_id` and
+ * continues yielding events until the published event's run ends.
  *
  * On reconnect the server replays run lifecycle events (`run:start`,
  * `run:stop`, `run:fail`, `run:cancel`) — these are deduped client-side by
  * `run_id`. `stream:data` chunks are *not* replayed and may be lost across
  * the disconnect window.
+ *
+ * Permanent errors (4xx other than 408 and 429) stop at once. Transport
+ * errors, 408, 429 and 5xx reconnect with jittered exponential backoff that
+ * honours `retry_after`.
  */
 export interface SubscribeReconnectOptions {
-  /** Maximum reconnect attempts after unexpected errors. Default 5. */
+  /**
+   * Consecutive failed connections tolerated before giving up. Default 5.
+   * Healthy connections, including 5-minute rollovers, reset the count.
+   */
   maxAttempts?: number;
 }
 
 export interface SubscribeWithEventOptions extends SubscribeWithEventParams {
   signal?: AbortSignal;
   /**
-   * Automatically reconnect when the server's 5-minute timeout closes the
-   * stream before a terminal `run:stop|fail|cancel` arrives.
+   * Automatically reconnect when the server's 5-minute limit closes the
+   * stream before the published event's run ends.
    *
    * - `true` (default) — reconnect using the existing `stream_id`, dedup
-   *   `run:*` events by `run_id`, stop on the first terminal event.
+   *   `run:*` events by `run_id`, stop after the final event of the event's
+   *   run. Status `pending_retry` is never final (the iterator follows the
+   *   retry run), and a failure that reports a scheduled retry is held for
+   *   5 s for that retry run; if none appears, the iterator ends after it.
    * - `false` — return after the single connection ends, as in 1.0.x.
    * - Object — reconnect with custom options.
    */
@@ -48,19 +61,16 @@ export interface SubscribeWithEventOptions extends SubscribeWithEventParams {
 export class StreamsResource {
   constructor(private readonly http: HttpClient) {}
 
-  /** Subscribe to an existing stream (GET SSE). */
+  /**
+   * Subscribe to an existing stream (GET SSE). The server ends the
+   * subscription after 5 minutes with `stream:complete`; this iterator then
+   * ends too. To wait for work on the stream, use `runs.wait` or `tasks.wait`.
+   */
   subscribe(
     streamId: string,
     options?: SubscribeWithEventParams & { signal?: AbortSignal },
   ): AsyncGenerator<StreamEvent, void, undefined> {
-    const { project, signal } = options ?? {};
-    return consumeSseResponse(async () => {
-      return this.http.requestRaw("GET", `/streams/${streamId}/subscribe`, {
-        query: project ? { project } : undefined,
-        headers: { Accept: "text/event-stream" },
-        signal,
-      });
-    }, { signal });
+    return this.subscribeOnce(streamId, options);
   }
 
   /** Subscribe to an existing stream via POST (Streamable HTTP SSE). */
@@ -70,7 +80,7 @@ export class StreamsResource {
   ): AsyncGenerator<StreamEvent, void, undefined> {
     const { project, signal } = options ?? {};
     return consumeSseResponse(async () => {
-      return this.http.requestRaw("POST", `/streams/${streamId}/subscribe`, {
+      return this.http.requestRaw("POST", `/streams/${enc(streamId)}/subscribe`, {
         query: project ? { project } : undefined,
         headers: { Accept: "text/event-stream" },
         signal,
@@ -82,82 +92,69 @@ export class StreamsResource {
    * Atomically subscribe then publish an event (POST SSE).
    * Recommended for agent/chat clients — eliminates publish-then-subscribe races.
    *
-   * Reconnects across the server's 5-minute idle timeout by default. Pass
+   * Reconnects across the server's 5-minute limit by default. Pass
    * `{ reconnect: false }` for the 1.0.x single-connection behavior.
    */
-  async *subscribeWithEvent(
+  subscribeWithEvent(
     body: SubscribeWithEventRequest,
     options?: SubscribeWithEventOptions,
   ): AsyncGenerator<StreamEvent, void, undefined> {
     if (options?.reconnect === false) {
-      yield* this.subscribeWithEventOnce(body, options);
-      return;
+      return this.subscribeWithEventOnce(body, options);
     }
-
     const maxAttempts =
-      (typeof options?.reconnect === "object" ? options.reconnect.maxAttempts : undefined) ?? 5;
-    const seenStart = new Set<string>();
-    const seenTerminal = new Set<string>();
-    let streamId: string | undefined;
-    let eventId: string | undefined;
-    let attempts = 0;
-
-    while (true) {
-      const iter = streamId
-        ? this.subscribe(streamId, { project: options?.project, signal: options?.signal })
-        : this.subscribeWithEventOnce(body, options);
-
-      let terminal = false;
-      try {
-        for await (const event of iter) {
-          if (event.type === "event:published") {
-            const published = event as EventPublishedEvent;
-            if (published.stream_id) streamId = published.stream_id;
-            if (published.event_id) eventId = published.event_id;
-          }
-
-          if (event.type === "run:start") {
-            const runId = (event as RunStartEvent).run?.run_id;
-            if (runId && seenStart.has(runId)) continue;
-            if (runId) seenStart.add(runId);
-          }
-
-          if (
-            event.type === "run:stop" ||
-            event.type === "run:fail" ||
-            event.type === "run:cancel"
-          ) {
-            const runEvent = event as RunStopEvent | RunFailEvent | RunCancelEvent;
-            const runId = runEvent.run?.run_id;
-            if (runId && seenTerminal.has(runId)) continue;
-            if (runId) seenTerminal.add(runId);
-            terminal = Boolean(eventId && runEvent.run?.event_id === eventId);
-          }
-
-          yield event;
-          if (terminal) return;
-        }
-      } catch (error) {
-        if (!streamId || attempts >= maxAttempts) throw error;
-      }
-
-      if (terminal) return;
-      if (!streamId) {
-        throw new Error("stream ended before event:published was received");
-      }
-      if (attempts >= maxAttempts) {
-        throw new Error("stream ended before the published event's run completed");
-      }
-
-      attempts += 1;
-      const delay = Math.min(250 * attempts, 2000);
-      await new Promise((resolve) => setTimeout(resolve, delay));
-    }
+      (typeof options?.reconnect === "object" ? options.reconnect.maxAttempts : undefined)
+      ?? DEFAULT_MAX_RECONNECT_ATTEMPTS;
+    return followStream({
+      signal: options?.signal,
+      open: (signal) => this.subscribeWithEventOnce(body, { ...options, signal }, STREAM_IDLE_TIMEOUT_MS),
+      reopen: (streamId, signal) =>
+        this.subscribeOnce(streamId, { ...options, signal }, STREAM_IDLE_TIMEOUT_MS),
+      correlator: new RunCorrelator(),
+      reconnector: new Reconnector({
+        maxAttempts,
+        signal: options?.signal,
+        timeoutMessage: "Timeout waiting for the published event's run",
+        exhaustedMessage: "stream ended before the published event's run completed",
+      }),
+      retryOpen: true,
+    });
   }
 
-  private subscribeWithEventOnce(
+  /**
+   * Delete the call traces of every run in a stream, including the tasks
+   * those runs started. Runs remain. Repeat while `complete` is false.
+   */
+  async purgeCalls(streamId: string, options?: { signal?: AbortSignal }): Promise<CallPurgeResponse> {
+    const envelope = await this.http.requestJson<CallPurgeResponse>(
+      "DELETE",
+      `/streams/${enc(streamId)}/calls`,
+      { signal: options?.signal },
+    );
+    return envelope.data;
+  }
+
+  /** @internal Open one stream connection; used by the durable helpers. */
+  subscribeOnce(
+    streamId: string,
+    options?: SubscribeWithEventParams & { signal?: AbortSignal },
+    idleTimeoutMs?: number,
+  ): AsyncGenerator<StreamEvent, void, undefined> {
+    const { project, signal } = options ?? {};
+    return consumeSseResponse(async () => {
+      return this.http.requestRaw("GET", `/streams/${enc(streamId)}/subscribe`, {
+        query: project ? { project } : undefined,
+        headers: { Accept: "text/event-stream" },
+        signal,
+      });
+    }, { signal, idleTimeoutMs });
+  }
+
+  /** @internal Open one subscribe-with-event connection. */
+  subscribeWithEventOnce(
     body: SubscribeWithEventRequest,
     options?: SubscribeWithEventParams & { signal?: AbortSignal },
+    idleTimeoutMs?: number,
   ): AsyncGenerator<StreamEvent, void, undefined> {
     const { project, signal } = options ?? {};
     return consumeSseResponse(async () => {
@@ -170,6 +167,6 @@ export class StreamsResource {
         body: JSON.stringify(body),
         signal,
       });
-    }, { signal });
+    }, { signal, idleTimeoutMs });
   }
 }

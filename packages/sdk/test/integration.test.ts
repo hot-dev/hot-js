@@ -3,6 +3,7 @@
 // integration/run.sh; without HOT_TEST_API_KEY set, the suite is skipped.
 import { describe, expect, it } from "vitest";
 import { HotClient } from "../src/client.js";
+import { waitForRunResult } from "../src/streaming/wait.js";
 
 const apiKey = process.env.HOT_TEST_API_KEY;
 const baseUrl = process.env.HOT_TEST_BASE_URL ?? "http://localhost:4681";
@@ -90,6 +91,38 @@ describe.skipIf(!apiKey)("hot dev integration", () => {
   it("calls a Hot function via callHot", { timeout: 60_000 }, async () => {
     const hot = client();
     await expect(hot.events.callHot("::fixture::sdk/add-nums", [2, 3])).resolves.toBe(5);
+  });
+
+  it("delivers stream chunks that arrive before run:start", { timeout: 60_000 }, async () => {
+    const hot = client();
+    const chunks: string[] = [];
+    await expect(hot.events.callHot("::fixture::sdk/stream-chunks", [], {
+      onChunk: (text) => chunks.push(text),
+    })).resolves.toBe("done");
+    expect(chunks).toEqual(["a", "b", "c"]);
+  });
+
+  it("follows a retrying handler to its retry run", { timeout: 60_000 }, async () => {
+    const hot = client();
+    const statuses: string[] = [];
+    let result: unknown;
+    for await (const event of hot.streams.subscribeWithEvent({ event_type: "sdk:flaky", event_data: {} })) {
+      if (event.type === "run:fail" || event.type === "run:stop") statuses.push(event.run?.status ?? "");
+      if (event.type === "run:stop") result = event.run?.result;
+    }
+    // The first attempt can be reported as pending_retry or, replayed after the
+    // retry was queued, as failed; the iterator ends only once the retry is seen.
+    expect(statuses).toHaveLength(2);
+    expect(statuses).toContain("succeeded");
+    expect(result).toEqual({ recovered: true, attempt: 1 });
+  });
+
+  it("waits for a retried handler's result after the fact", { timeout: 60_000 }, async () => {
+    const hot = client();
+    const event = await hot.events.publish({ event_type: "sdk:flaky", event_data: {} });
+    // Subscribing late makes the server replay the first attempt from the database.
+    const run = await waitForRunResult(hot.http, event.stream_id, event.event_id, { timeoutMs: 30_000 });
+    expect(run.result).toEqual({ recovered: true, attempt: 1 });
   });
 
   it("surfaces run failure messages", { timeout: 60_000 }, async () => {

@@ -8,12 +8,16 @@ import type {
 const enc = encodeURIComponent;
 
 export class ContextResource {
-  constructor(private readonly http: HttpClient) {}
+  /**
+   * @param prefix Path prefix inside `/v1`; `hot.orgs.env(org, env)` sets it to
+   * `/orgs/{org}/envs/{env}` for an org API key.
+   */
+  constructor(private readonly http: HttpClient, private readonly prefix = "") {}
 
   async list(project: string, options?: { signal?: AbortSignal }) {
     return this.http.requestList<ContextVariableRecord>(
       "GET",
-      `/projects/${enc(project)}/context`,
+      `${this.prefix}/projects/${enc(project)}/context`,
       { signal: options?.signal },
     );
   }
@@ -25,7 +29,7 @@ export class ContextResource {
   ) {
     const envelope = await this.http.requestJson<ContextVariableRecord>(
       "POST",
-      `/projects/${enc(project)}/context`,
+      `${this.prefix}/projects/${enc(project)}/context`,
       {
         body: JSON.stringify(body),
         signal: options?.signal,
@@ -42,7 +46,7 @@ export class ContextResource {
   ) {
     const envelope = await this.http.requestJson<ContextVariableRecord>(
       "PUT",
-      `/projects/${enc(project)}/context/${enc(key)}`,
+      `${this.prefix}/projects/${enc(project)}/context/${enc(key)}`,
       {
         body: JSON.stringify(body),
         signal: options?.signal,
@@ -52,7 +56,7 @@ export class ContextResource {
   }
 
   async delete(project: string, key: string, options?: { signal?: AbortSignal }) {
-    await this.http.requestRaw("DELETE", `/projects/${enc(project)}/context/${enc(key)}`, {
+    await this.http.requestVoid("DELETE", `${this.prefix}/projects/${enc(project)}/context/${enc(key)}`, {
       signal: options?.signal,
     });
   }

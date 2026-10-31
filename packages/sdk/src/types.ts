@@ -35,10 +35,12 @@ export interface ApiErrorBody {
   };
 }
 
+export type Query = Record<string, string | number | boolean | undefined>;
+
 export interface ListQuery {
   limit?: number;
   offset?: number;
-  [key: string]: string | number | undefined;
+  [key: string]: string | number | boolean | undefined;
 }
 
 export type JsonObject = Record<string, unknown>;
@@ -50,6 +52,11 @@ export interface HotClientOptions {
   token: string;
   /** Custom fetch implementation (tests, edge runtimes). */
   fetch?: typeof fetch;
+  /**
+   * Per-request timeout for JSON API calls, in milliseconds. Default 60000;
+   * `0` disables it. Streams, uploads and downloads are not bound by it.
+   */
+  timeoutMs?: number;
 }
 
 export interface EventRecord {
@@ -294,12 +301,18 @@ export type EnvSubscriptionEvent =
       type: "keepalive";
     }
   | {
-      type: string;
-      [key: string]: unknown;
+      /** A type this SDK version does not know; `event_type` is the original. */
+      type: "unknown";
+      event_type: string;
+      data: Record<string, unknown>;
     };
 
+/** Environment consumption compared to shared billing-account limits. */
 export interface OrgUsage {
   org_id: string;
+  env_id: string;
+  usage_scope: "environment";
+  limits_scope: "billing_account";
   usage: {
     runs_this_period: number;
     file_storage_bytes: number;
@@ -528,4 +541,112 @@ export interface WebhookResponse {
   message_id?: string;
   queued?: boolean;
   error?: string;
+}
+
+export type OrgLifecycle = "active" | "suspended" | "archived";
+
+/** An organization as the org API returns it (`/v1/orgs`). */
+export interface OrgRecord {
+  org_id: string;
+  parent_org_id: string | null;
+  name: string;
+  slug: string;
+  external_id: string | null;
+  lifecycle_state: OrgLifecycle;
+  active: boolean;
+  created_at: string;
+}
+
+/** Exact wire shape for `POST /v1/orgs`. */
+export interface CreateOrgRequest {
+  name: string;
+  /** 32 characters or fewer. */
+  slug: string;
+  external_id?: string | null;
+  /** Keep it stable when retrying the same provisioning request. */
+  idempotency_key: string;
+}
+
+export interface CreateOrgResponse {
+  org: OrgRecord;
+  /** The child's default environment. */
+  env_id: string;
+  /** False when the idempotency key matched an earlier request. */
+  created: boolean;
+}
+
+export interface UpdateOrgRequest {
+  state: OrgLifecycle;
+}
+
+/** Account usage for a root org (`GET /v1/orgs/{org_id}/usage`). */
+export interface AccountUsage {
+  org_id: string;
+  usage_scope: "account";
+  period_start: string;
+  period_end: string;
+  usage: JsonObject;
+}
+
+export interface PurgeOrgCallsQuery extends Query {
+  /** Also purge the organization's children. */
+  include_sub_orgs?: boolean;
+}
+
+/** The outcome of one call-trace purge request. */
+export interface CallPurgeResponse {
+  calls_deleted: number;
+  blob_refs_released: number;
+  /** False when the request ran out of time. Repeat it to continue. */
+  complete: boolean;
+}
+
+export interface OrgEnvRecord {
+  env_id: string;
+  org_id: string;
+  name: string;
+  active: boolean;
+  created_at: string;
+}
+
+export interface CreateEnvRequest {
+  name: string;
+}
+
+export type ApiKeyScope = "org" | "env";
+
+export interface ApiKeyRecord {
+  api_key_id: string;
+  scope: ApiKeyScope;
+  org_id: string;
+  env_id: string | null;
+  description: string;
+  permissions: Permissions;
+  active: boolean;
+  expires_at: string | null;
+  /** The org key that minted this key; null when a person created it. */
+  issuer_api_key_id: string | null;
+  created_at: string;
+  /** Returned once, when the key is created or rotated. */
+  token?: string;
+  /** When the previous secret stops working, after a rotation. */
+  previous_secret_expires_at?: string;
+}
+
+/** Exact wire shape for minting an org or environment API key. */
+export interface CreateApiKeyRequest {
+  description: string;
+  permissions: Permissions;
+  /** RFC 3339; never later than the issuing key's expiry. */
+  expires_at?: string | null;
+}
+
+export interface UpdateApiKeyRequest {
+  /** New grants; they must fit inside the caller's own. */
+  permissions: Permissions;
+}
+
+export interface RotateApiKeyRequest {
+  /** Seconds the previous secret keeps working (default 86400, maximum 604800). */
+  overlap_seconds?: number;
 }

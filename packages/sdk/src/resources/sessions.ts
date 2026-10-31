@@ -27,7 +27,7 @@ export class SessionsResource {
   }
 
   async revoke(sessionId: string, options?: { signal?: AbortSignal }) {
-    await this.http.requestRaw("DELETE", `/sessions/${enc(sessionId)}`, {
+    await this.http.requestVoid("DELETE", `/sessions/${enc(sessionId)}`, {
       signal: options?.signal,
     });
   }

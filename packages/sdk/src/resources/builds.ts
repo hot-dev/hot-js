@@ -18,17 +18,21 @@ export interface UploadBuildOptions {
 }
 
 export class BuildsResource {
-  constructor(private readonly http: HttpClient) {}
+  /**
+   * @param prefix Path prefix inside `/v1`; `hot.orgs.env(org, env)` sets it to
+   * `/orgs/{org}/envs/{env}` for an org API key.
+   */
+  constructor(private readonly http: HttpClient, private readonly prefix = "") {}
 
   async list(query?: ListQuery, options?: { signal?: AbortSignal }) {
-    return this.http.requestList<BuildWithProjectRecord>("GET", "/builds", {
+    return this.http.requestList<BuildWithProjectRecord>("GET", `${this.prefix}/builds`, {
       query,
       signal: options?.signal,
     });
   }
 
   async listForProject(project: string, query?: ListQuery, options?: { signal?: AbortSignal }) {
-    return this.http.requestList<BuildRecord>("GET", `/projects/${enc(project)}/builds`, {
+    return this.http.requestList<BuildRecord>("GET", `${this.prefix}/projects/${enc(project)}/builds`, {
       query,
       signal: options?.signal,
     });
@@ -37,7 +41,7 @@ export class BuildsResource {
   async get(project: string, buildId: string, options?: { signal?: AbortSignal }) {
     const envelope = await this.http.requestJson<BuildRecord>(
       "GET",
-      `/projects/${enc(project)}/builds/${enc(buildId)}`,
+      `${this.prefix}/projects/${enc(project)}/builds/${enc(buildId)}`,
       { signal: options?.signal },
     );
     return envelope.data;
@@ -46,7 +50,7 @@ export class BuildsResource {
   async deployed(project: string, options?: { signal?: AbortSignal }) {
     const envelope = await this.http.requestJson<BuildRecord>(
       "GET",
-      `/projects/${enc(project)}/builds/deployed`,
+      `${this.prefix}/projects/${enc(project)}/builds/deployed`,
       { signal: options?.signal },
     );
     return envelope.data;
@@ -55,7 +59,7 @@ export class BuildsResource {
   async live(project: string, options?: { signal?: AbortSignal }) {
     const envelope = await this.http.requestJson<BuildRecord>(
       "GET",
-      `/projects/${enc(project)}/builds/live`,
+      `${this.prefix}/projects/${enc(project)}/builds/live`,
       { signal: options?.signal },
     );
     return envelope.data;
@@ -67,7 +71,7 @@ export class BuildsResource {
     if (options.build_id) form.set("build_id", options.build_id);
     form.set("file", options.file as Blob, options.filename ?? "build.hot.zip");
 
-    const response = await this.http.requestRaw("POST", `/projects/${enc(project)}/builds`, {
+    const response = await this.http.requestRaw("POST", `${this.prefix}/projects/${enc(project)}/builds`, {
       headers: { Accept: "application/json" },
       body: form,
       signal: options.signal,
@@ -77,7 +81,7 @@ export class BuildsResource {
   }
 
   async download(project: string, buildId: string, options?: { signal?: AbortSignal }) {
-    return this.http.requestRaw("GET", `/projects/${enc(project)}/builds/${enc(buildId)}/download`, {
+    return this.http.requestRaw("GET", `${this.prefix}/projects/${enc(project)}/builds/${enc(buildId)}/download`, {
       signal: options?.signal,
     });
   }
@@ -85,7 +89,7 @@ export class BuildsResource {
   async deploy(project: string, buildId: string, options?: { signal?: AbortSignal }) {
     const envelope = await this.http.requestJson<BuildRecord>(
       "POST",
-      `/projects/${enc(project)}/builds/${enc(buildId)}/deploy`,
+      `${this.prefix}/projects/${enc(project)}/builds/${enc(buildId)}/deploy`,
       { signal: options?.signal },
     );
     return envelope.data;
