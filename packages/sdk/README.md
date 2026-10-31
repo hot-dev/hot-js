@@ -117,9 +117,12 @@ Administrative calls also need the matching grant: listing projects needs
 backend; local API servers without pub/sub return a 503. `subscribeWithEvent`
 reconnects across the API's 5-minute SSE limit and stops after the terminal
 run correlated to the event it published. Unrelated runs on the same stream do
-not end the iterator. A `run:fail` whose run status is `pending_retry` is not
-terminal: the handler will be retried as a new run (linked by `origin_run_id`),
-and the iterator follows it.
+not end the iterator. A run with status `pending_retry` is not finished, whatever
+the event type: the handler will be retried as a new run (linked by
+`origin_run_id`), and the iterator follows it. When the server replays a retried
+attempt as `run:fail` with status `failed` and a raised `retry_attempt`, the
+helpers wait up to 5 s (or until `timeoutMs`) for the retry run before they
+treat the failure as final.
 
 When code has a run id but does not need the full stream, wait on its durable
 terminal snapshot:

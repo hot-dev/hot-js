@@ -8,7 +8,7 @@ import { waitForRunResult } from "../src/streaming/wait.js";
 import type { StreamEvent } from "../src/streaming/types.js";
 
 type Step =
-  | { sse: string[] }
+  | { sse: string[]; keepOpen?: boolean }
   | { status: number; headers?: Record<string, string>; code?: string }
   | { network: true };
 
@@ -37,10 +37,13 @@ function scripted(steps: Step[]) {
         });
       }
       const encoder = new TextEncoder();
+      const signal = init?.signal;
       return new Response(new ReadableStream<Uint8Array>({
         start(controller) {
           for (const block of step.sse) controller.enqueue(encoder.encode(`data: ${block}\n\n`));
-          controller.close();
+          // keepOpen: an idle live connection, closed only by the client.
+          if (!step.keepOpen) controller.close();
+          else signal?.addEventListener("abort", () => controller.error(signal.reason), { once: true });
         },
       }), { headers: { "Content-Type": "text/event-stream" } });
     },
@@ -242,5 +245,74 @@ describe("pending_retry", () => {
     const finalFail = '{"type":"run:fail","run":{"run_id":"rB","event_id":"e9","origin_run_id":"rA","run_type":"event","status":"failed","retry_attempt":1,"result":"second attempt"}}';
     const { hot } = scripted([{ sse: [published, fail, finalFail] }]);
     await expect(hot.events.callHot("::app/flaky")).rejects.toThrow("second attempt");
+  });
+});
+
+// The server replays a retried first attempt lossily (see the SDK notes):
+// before the retry is queued as run:fail or run:stop with status
+// pending_retry; after, as run:fail with status failed and retry_attempt 1,
+// possibly before the retry run exists, and newest runs first.
+describe("lossy replays of a retried attempt", () => {
+  const run = (fields: Record<string, unknown>) => JSON.stringify({ run_type: "event", ...fields });
+  const firstAttempt = (type: string, status: string) =>
+    `{"type":"${type}","run":${run({ run_id: "rA", event_id: "e1", status, retry_attempt: 1, result: "first attempt" })}}`;
+  const retryStart = `{"type":"run:start","run":${run({ run_id: "rB", event_id: "e9", origin_run_id: "rA", status: "running", retry_attempt: 1 })}}`;
+  const retryStop = `{"type":"run:stop","run":${run({ run_id: "rB", event_id: "e9", origin_run_id: "rA", status: "succeeded", retry_attempt: 1, result: { recovered: true } })}}`;
+
+  it("does not take run:stop with status pending_retry as success", async () => {
+    const { hot } = scripted([{ sse: [published, firstAttempt("run:stop", "pending_retry"), retryStart, retryStop] }]);
+    await expect(hot.events.callHot("::app/flaky")).resolves.toEqual({ recovered: true });
+  });
+
+  it("holds run:fail with status failed and a scheduled retry until the retry run appears", async () => {
+    // The retry run shows up only on the next connection.
+    const { hot, calls } = scripted([
+      { sse: [published, firstAttempt("run:fail", "failed")] },
+      { sse: [retryStart, retryStop] },
+    ]);
+    await expect(hot.events.callHot("::app/flaky")).resolves.toEqual({ recovered: true });
+    expect(calls.map((call) => call.method)).toEqual(["POST", "GET"]);
+  });
+
+  it("follows a retry that arrives before its origin run (newest first)", async () => {
+    const { hot } = scripted([{ sse: [published, retryStop, firstAttempt("run:fail", "failed"), retryStart] }]);
+    const started = Date.now();
+    await expect(hot.events.callHot("::app/flaky")).resolves.toEqual({ recovered: true });
+    expect(Date.now() - started).toBeLessThan(1_000);
+  });
+
+  it("clears the hold as soon as the retry run appears", async () => {
+    const { hot } = scripted([{ sse: [published, firstAttempt("run:fail", "failed"), retryStart, retryStop] }]);
+    const started = Date.now();
+    await expect(hot.events.callHot("::app/flaky")).resolves.toEqual({ recovered: true });
+    expect(Date.now() - started).toBeLessThan(1_000);
+  });
+
+  it("reports a held failure at the caller's deadline instead of a timeout", async () => {
+    const { hot } = scripted([{ sse: [published, firstAttempt("run:fail", "failed")], keepOpen: true }]);
+    const started = Date.now();
+    const error = await hot.events.callHot("::app/flaky", [], { timeoutMs: 800 }).catch((e: unknown) => e);
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(error).toMatchObject({ message: "first attempt" });
+    expect((error as Error).name).not.toBe("TimeoutError");
+  });
+
+  it("ends subscribeWithEvent after the grace when no retry appears", async () => {
+    const { hot } = scripted([{ sse: [published, firstAttempt("run:fail", "failed")], keepOpen: true }]);
+    const started = Date.now();
+    const events = await collect(hot.streams.subscribeWithEvent({ event_type: "x", event_data: {} }));
+    const elapsed = Date.now() - started;
+    expect(events.map((event) => event.type)).toEqual(["event:published", "run:fail"]);
+    expect(elapsed).toBeGreaterThanOrEqual(4_900);
+    expect(elapsed).toBeLessThan(7_000);
+  }, 10_000);
+
+  it("fails a first attempt without a scheduled retry at once", async () => {
+    const plain = `{"type":"run:fail","run":${run({ run_id: "rA", event_id: "e1", status: "failed", retry_attempt: 0, result: "boom" })}}`;
+    const task = `{"type":"run:stop","run":${run({ run_id: "rT", event_id: "e5", origin_run_id: "rA", run_type: "task", status: "succeeded", result: "task" })}}`;
+    const { hot } = scripted([{ sse: [published, task, plain] }]);
+    const started = Date.now();
+    await expect(hot.events.callHot("::app/fn")).rejects.toThrow("boom");
+    expect(Date.now() - started).toBeLessThan(1_000);
   });
 });

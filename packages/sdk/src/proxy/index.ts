@@ -237,18 +237,40 @@ function jsonError(status: number, error: string): Response {
 /**
  * Pass through only the SSE blocks that belong to the event this request
  * published: `event:published`, the lifecycle events of its runs (and their
- * retries), their `stream:data` (held until the run is identified, because it
- * can precede `run:start`), their tasks' `task:update`, `stream:complete` and
- * keepalive comments.
+ * retries), their `stream:data`, their tasks' `task:update`, `stream:complete`
+ * and keepalive comments. Blocks of runs not yet identified are held, because
+ * chunks can precede `run:start` and a retry can precede its origin run.
  */
 function publishedEventFilter(): TransformStream<Uint8Array, Uint8Array> {
   const decoder = new TextDecoder();
   const encoder = new TextEncoder();
   const correlator = new RunCorrelator();
-  // stream:data blocks of runs not yet identified, bounded like the SDK's own buffer.
+  // Blocks of runs not yet identified, bounded like the SDK's own buffer.
   const held = new Map<string, string[]>();
   let heldCount = 0;
   let buffer = "";
+
+  const hold = (runId: string, block: string) => {
+    const queue = held.get(runId) ?? [];
+    queue.push(block);
+    held.set(runId, queue);
+    if (++heldCount > MAX_HELD_BLOCKS) {
+      const [oldest, blocks] = held.entries().next().value as [string, string[]];
+      blocks.shift();
+      heldCount -= 1;
+      if (blocks.length === 0) held.delete(oldest);
+    }
+  };
+  const release = (): string[] => {
+    const out: string[] = [];
+    for (const [runId, blocks] of [...held]) {
+      if (!correlator.isCorrelated(runId)) continue;
+      held.delete(runId);
+      heldCount -= blocks.length;
+      out.push(...blocks);
+    }
+    return out;
+  };
 
   const decide = (block: string): string[] => {
     const data = block.split("\n")
@@ -275,15 +297,7 @@ function publishedEventFilter(): TransformStream<Uint8Array, Uint8Array> {
         const runId = event.run_id;
         if (!runId) return [];
         if (correlator.isCorrelated(runId)) return [block];
-        const queue = held.get(runId) ?? [];
-        queue.push(block);
-        held.set(runId, queue);
-        if (++heldCount > MAX_HELD_BLOCKS) {
-          const [oldest, blocks] = held.entries().next().value as [string, string[]];
-          blocks.shift();
-          heldCount -= 1;
-          if (blocks.length === 0) held.delete(oldest);
-        }
+        hold(runId, block);
         return [];
       }
       case "task:update": {
@@ -292,13 +306,15 @@ function publishedEventFilter(): TransformStream<Uint8Array, Uint8Array> {
       }
       default: {
         if (event.type !== "run:start" && !isRunTerminalEvent(event)) return [];
-        if (!correlator.correlate(event.run)) return [];
-        const runId = event.run!.run_id;
-        correlator.endsWait(event);
-        const chunks = held.get(runId) ?? [];
-        held.delete(runId);
-        heldCount -= chunks.length;
-        return [...chunks, block];
+        const runId = event.run?.run_id;
+        if (!runId) return [];
+        correlator.observe(event);
+        if (!correlator.isCorrelated(runId)) {
+          // Possibly a retry whose origin run is not identified yet.
+          if (event.run?.origin_run_id) hold(runId, block);
+          return [];
+        }
+        return [...release(), block];
       }
     }
   };

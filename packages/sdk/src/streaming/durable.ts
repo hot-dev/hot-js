@@ -3,7 +3,14 @@
 import { isHotApiError, isPermanentError } from "../errors.js";
 import { backoffDelayMs, mergeAbortSignals, sleep, timeoutError } from "../retry.js";
 import type { RunRecord } from "../types.js";
-import type { StreamDataEvent, StreamEvent } from "./types.js";
+import type {
+  RunCancelEvent,
+  RunFailEvent,
+  RunStartEvent,
+  RunStopEvent,
+  StreamDataEvent,
+  StreamEvent,
+} from "./types.js";
 import { isRunTerminalEvent } from "./types.js";
 
 export const DEFAULT_MAX_RECONNECT_ATTEMPTS = 5;
@@ -57,17 +64,46 @@ export class Reconnector {
   }
 }
 
+/** How long a failure whose retry was scheduled waits for the retry run. */
+export const RETRY_GRACE_MS = 5_000;
+
+type RunLifecycleEvent = RunStartEvent | RunStopEvent | RunFailEvent | RunCancelEvent;
+export type RunOutcomeEvent = RunStopEvent | RunFailEvent | RunCancelEvent;
+
+interface TiedRun {
+  /** Highest `retry_attempt` seen for the run. */
+  attempt: number;
+  runType: string | undefined;
+}
+
 /**
- * Tracks which runs belong to one published event: runs whose `event_id` is
- * the event's, and the retry runs of those runs (a retry gets a new event and
- * links back only through `origin_run_id`). Buffers `stream:data` for runs not
- * yet correlated, because the server may send chunks and even `run:stop`
- * before `run:start`.
+ * Ties runs on a stream to one published event and decides when its work is
+ * done. A run belongs to the event when its `event_id` matches, or when it is
+ * a retry of a tied run: its `origin_run_id` names a tied run of the same
+ * `run_type` (a retry gets a new event ID; task runs also name their starting
+ * run as origin, but have type `task`).
+ *
+ * The server replays a retried first attempt lossily: as `run:fail` or
+ * `run:stop` with status `pending_retry`, or, once the retry is queued and
+ * before the retry run exists, as `run:fail` with status `failed`. So:
+ * `pending_retry` is never final; a tied run that a tied retry names as its
+ * origin is "retried" and its later `run:fail` is not final; and a `run:fail`
+ * whose `retry_attempt` is above its own attempt number (its origin's
+ * `retry_attempt`, or 0) is held for `RETRY_GRACE_MS` and stands only if no
+ * retry of it appears by then (or by the caller's deadline).
+ *
+ * Buffers `stream:data` for runs not yet tied, because the server may send
+ * chunks and even `run:stop` before `run:start`.
  */
 export class RunCorrelator {
   eventId: string | undefined;
-  private readonly runs = new Map<string, RunRecord>();
-  private readonly retrying = new Set<string>();
+  /** The event that ended the wait: the final run's stop, failure or cancel. */
+  outcome: RunOutcomeEvent | undefined;
+  private readonly runs = new Map<string, TiedRun>();
+  private readonly retried = new Set<string>();
+  /** Run events whose origin run is not tied yet, by `origin_run_id`. */
+  private readonly orphans = new Map<string, RunLifecycleEvent[]>();
+  private held: { runId: string; until: number; event: RunFailEvent } | undefined;
   private readonly buffered = new Map<string, StreamDataEvent[]>();
   private bufferedCount = 0;
 
@@ -75,34 +111,32 @@ export class RunCorrelator {
     this.eventId = eventId;
   }
 
-  /** Whether `run` belongs to the event; records it when it does. */
-  correlate(run: RunRecord | undefined): boolean {
-    if (!run?.run_id) return false;
-    if (this.runs.has(run.run_id)) return true;
-    const origin = run.origin_run_id ? this.runs.get(run.origin_run_id) : undefined;
-    const ours = (this.eventId !== undefined && run.event_id === this.eventId)
-      || (origin !== undefined && (
-        this.retrying.has(origin.run_id)
-        || ((run.retry_attempt ?? 0) > 0 && run.run_type === origin.run_type)
-      ));
-    if (ours) this.runs.set(run.run_id, run);
-    return ours;
-  }
-
   isCorrelated(runId: string | undefined): boolean {
     return runId !== undefined && this.runs.has(runId);
   }
 
   /**
-   * Whether a terminal event for a correlated run ends the wait. A `run:fail`
-   * whose run is `pending_retry` does not: its retry run continues the work.
+   * Feed one stream event. Returns true once the wait has an `outcome`. A run
+   * event may also tie runs seen earlier (retries that arrived before their
+   * origin), so call `takeReady()` after it for chunks that became deliverable.
    */
-  endsWait(event: StreamEvent): boolean {
-    if (!isRunTerminalEvent(event) || !this.correlate(event.run)) return false;
-    if (event.type === "run:fail" && event.run?.status === "pending_retry") {
-      this.retrying.add(event.run.run_id);
-      return false;
-    }
+  observe(event: StreamEvent): boolean {
+    if (this.outcome) return true;
+    if (event.type !== "run:start" && !isRunTerminalEvent(event)) return false;
+    if (!event.run?.run_id) return false;
+    return this.runEvent(event);
+  }
+
+  /** When a held failure stands unless a retry appears (epoch milliseconds). */
+  wakeAt(): number | undefined {
+    return this.held?.until;
+  }
+
+  /** The held failure, if any, becomes the outcome. Returns whether it did. */
+  expire(): boolean {
+    if (!this.held) return false;
+    this.outcome = this.held.event;
+    this.held = undefined;
     return true;
   }
 
@@ -122,14 +156,86 @@ export class RunCorrelator {
     return [];
   }
 
-  /** Chunks buffered for `runId`, once it is correlated. */
-  take(runId: string | undefined): StreamDataEvent[] {
-    if (!runId || !this.runs.has(runId)) return [];
+  /** Buffered chunks of every run tied so far, in arrival order per run. */
+  takeReady(): StreamDataEvent[] {
+    const ready: StreamDataEvent[] = [];
+    for (const runId of [...this.buffered.keys()]) {
+      if (this.runs.has(runId)) ready.push(...this.take(runId));
+    }
+    return ready;
+  }
+
+  private take(runId: string): StreamDataEvent[] {
     const queue = this.buffered.get(runId);
     if (!queue) return [];
     this.buffered.delete(runId);
     this.bufferedCount -= queue.length;
     return queue;
+  }
+
+  private ties(run: RunRecord): boolean {
+    if (this.eventId !== undefined && run.event_id === this.eventId) return true;
+    const origin = run.origin_run_id ? this.runs.get(run.origin_run_id) : undefined;
+    return origin !== undefined && origin.runType === run.run_type;
+  }
+
+  private runEvent(event: RunLifecycleEvent): boolean {
+    const run = event.run!;
+    if (!this.ties(run)) {
+      if (run.origin_run_id) {
+        const queue = this.orphans.get(run.origin_run_id) ?? [];
+        queue.push(event);
+        this.orphans.set(run.origin_run_id, queue);
+      }
+      return false;
+    }
+    const attempt = run.retry_attempt ?? 0;
+    let orphans: RunLifecycleEvent[] = [];
+    const tied = this.runs.get(run.run_id);
+    if (tied) {
+      tied.attempt = Math.max(tied.attempt, attempt);
+    } else {
+      this.runs.set(run.run_id, { attempt, runType: run.run_type });
+      orphans = (this.orphans.get(run.run_id) ?? []).filter((orphan) => orphan.run?.run_type === run.run_type);
+      this.orphans.delete(run.run_id);
+      // A retry of this run is already on the stream.
+      if (orphans.length > 0) this.retried.add(run.run_id);
+    }
+    if (run.origin_run_id) {
+      this.retried.add(run.origin_run_id);
+      if (this.held?.runId === run.origin_run_id) this.held = undefined;
+    }
+    if (this.decide(event)) return true;
+    for (const orphan of orphans) {
+      if (this.runEvent(orphan)) return true;
+    }
+    return false;
+  }
+
+  /** Whether a tied run's event ends the wait. */
+  private decide(event: RunLifecycleEvent): boolean {
+    const run = event.run!;
+    if (run.status === "pending_retry") return false;
+    switch (event.type) {
+      case "run:stop":
+      case "run:cancel":
+        this.outcome = event;
+        return true;
+      case "run:fail": {
+        if (this.retried.has(run.run_id)) return false;
+        // retry_attempt goes up when a retry is scheduled; a run's own attempt
+        // number is its origin's retry_attempt (0 for a first attempt).
+        const base = run.origin_run_id ? this.runs.get(run.origin_run_id)?.attempt ?? 0 : 0;
+        if ((run.retry_attempt ?? 0) > base) {
+          this.held ??= { runId: run.run_id, until: Date.now() + RETRY_GRACE_MS, event };
+          return false;
+        }
+        this.outcome = event;
+        return true;
+      }
+      default:
+        return false;
+    }
   }
 
   private dropOldest(): void {
@@ -142,11 +248,12 @@ export class RunCorrelator {
 
 export interface FollowStreamOptions {
   /** Open the first connection (for example the subscribe-with-event POST). */
-  open: () => AsyncGenerator<StreamEvent, void, undefined>;
+  open: (signal: AbortSignal) => AsyncGenerator<StreamEvent, void, undefined>;
   /** Open a reconnection to an existing stream. */
-  reopen: (streamId: string) => AsyncGenerator<StreamEvent, void, undefined>;
+  reopen: (streamId: string, signal: AbortSignal) => AsyncGenerator<StreamEvent, void, undefined>;
   /** Known stream id; otherwise learned from `event:published`. */
   streamId?: string;
+  signal?: AbortSignal;
   correlator: RunCorrelator;
   reconnector: Reconnector;
   /**
@@ -156,10 +263,13 @@ export interface FollowStreamOptions {
   retryOpen?: boolean;
 }
 
+const WOKE = Symbol("woke");
+
 /**
  * Yield a stream's events across reconnects, deduplicating replayed run
- * lifecycle events by `run_id`, and return after the terminal event of the
- * correlated run.
+ * lifecycle events by `run_id`, and return once the correlator has an
+ * outcome: the final event of the published event's run, or a held failure
+ * whose retry did not appear in time.
  */
 export async function* followStream(
   options: FollowStreamOptions,
@@ -170,11 +280,23 @@ export async function* followStream(
   let streamId = options.streamId;
 
   while (true) {
-    const iter = streamId ? options.reopen(streamId) : options.open();
+    const connection = new AbortController();
+    const signal = mergeAbortSignals([options.signal, connection.signal]);
+    const iter = streamId ? options.reopen(streamId, signal) : options.open(signal);
     let progressed = false;
     let failure: unknown;
+    let pending: Promise<IteratorResult<StreamEvent, void>> | undefined;
     try {
-      for await (const event of iter) {
+      while (true) {
+        pending ??= iter.next();
+        const next = await nextOrWake(pending, correlator.wakeAt());
+        if (next === WOKE) {
+          if (correlator.expire()) return;
+          continue;
+        }
+        pending = undefined;
+        if (next.done) break;
+        const event = next.value;
         if (event.type === "event:published") {
           if (event.stream_id) streamId = event.stream_id;
           if (event.event_id && correlator.eventId === undefined) correlator.eventId = event.event_id;
@@ -182,7 +304,6 @@ export async function* followStream(
           const runId = event.run?.run_id;
           if (runId && seenStart.has(runId)) continue;
           if (runId) seenStart.add(runId);
-          correlator.correlate(event.run);
         } else if (isRunTerminalEvent(event)) {
           const runId = event.run?.run_id;
           if (runId && seenTerminal.has(runId)) continue;
@@ -191,12 +312,17 @@ export async function* followStream(
         // Any new event is progress, including the server's 300 s
         // `stream:complete` rollover.
         if (event.type !== "keepalive") progressed = true;
-        const done = correlator.endsWait(event);
+        const done = correlator.observe(event);
         yield event;
         if (done) return;
       }
     } catch (error) {
       failure = error;
+    } finally {
+      // Close the connection on every exit, including a consumer leaving early.
+      if (pending) pending.catch(() => {});
+      else void iter.return(undefined).catch(() => {});
+      connection.abort();
     }
 
     if (!streamId) {
@@ -206,6 +332,20 @@ export async function* followStream(
       if (!resendable) throw failure ?? new Error("stream ended before event:published was received");
     }
     await reconnector.next(progressed, failure);
+  }
+}
+
+/** The next event, or `WOKE` when `wakeAt` passes first. */
+async function nextOrWake<T>(pending: Promise<T>, wakeAt: number | undefined): Promise<T | typeof WOKE> {
+  if (wakeAt === undefined) return pending;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const wake = new Promise<typeof WOKE>((resolve) => {
+    timer = setTimeout(() => resolve(WOKE), Math.max(0, wakeAt - Date.now()));
+  });
+  try {
+    return await Promise.race([pending, wake]);
+  } finally {
+    clearTimeout(timer);
   }
 }
 

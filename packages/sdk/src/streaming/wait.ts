@@ -7,6 +7,7 @@ import {
   followStream,
   Reconnector,
   RunCorrelator,
+  type RunOutcomeEvent,
   STREAM_IDLE_TIMEOUT_MS,
 } from "./durable.js";
 import type { StreamDataEvent, StreamEvent } from "./types.js";
@@ -40,8 +41,9 @@ export async function waitForRunResult(
   return waitForCorrelatedRun(
     (signal, reconnector, correlator) => followStream({
       streamId,
-      open: () => streams.subscribeOnce(streamId, { signal }, STREAM_IDLE_TIMEOUT_MS),
-      reopen: (id) => streams.subscribeOnce(id, { signal }, STREAM_IDLE_TIMEOUT_MS),
+      signal,
+      open: (connection) => streams.subscribeOnce(streamId, { signal: connection }, STREAM_IDLE_TIMEOUT_MS),
+      reopen: (id, connection) => streams.subscribeOnce(id, { signal: connection }, STREAM_IDLE_TIMEOUT_MS),
       correlator,
       reconnector,
     }),
@@ -82,29 +84,27 @@ export async function waitForCorrelatedRun(
 
   try {
     for await (const evt of follow(signal, reconnector, correlator)) {
-      if (evt.type === "run:start") {
-        deliver(correlator.take(evt.run?.run_id));
-      } else if (evt.type === "stream:data") {
-        deliver(correlator.data(evt));
-      } else if (isRunTerminalEvent(evt) && correlator.isCorrelated(runIdFromEvent(evt))) {
-        const run = evt.run!;
-        deliver(correlator.take(run.run_id));
-        if (evt.type === "run:fail" && run.status === "pending_retry") continue;
-        if (evt.type === "run:fail") {
-          throw new RunTerminalError(runResultMessage(run, "Run failed"));
-        }
-        if (evt.type === "run:cancel") {
-          throw new RunTerminalError(runResultMessage(run, "Run cancelled"));
-        }
-        return run;
-      }
+      if (evt.type === "stream:data") deliver(correlator.data(evt));
+      else deliver(correlator.takeReady());
     }
-    throw new Error("Stream ended before run completed");
   } catch (error) {
-    throw signal.aborted && !(error instanceof RunTerminalError) ? signal.reason ?? error : error;
+    // At the deadline, a failure that was waiting for its retry stands.
+    if (controller.signal.aborted && !options?.signal?.aborted && correlator.expire()) {
+      return settle(correlator.outcome!);
+    }
+    throw signal.aborted ? signal.reason ?? error : error;
   } finally {
     clearTimeout(timeout);
   }
+  if (!correlator.outcome) throw new Error("Stream ended before run completed");
+  return settle(correlator.outcome);
+}
+
+function settle(outcome: RunOutcomeEvent): RunRecord {
+  const run = outcome.run!;
+  if (outcome.type === "run:fail") throw new RunTerminalError(runResultMessage(run, "Run failed"));
+  if (outcome.type === "run:cancel") throw new RunTerminalError(runResultMessage(run, "Run cancelled"));
+  return run;
 }
 
 export function runResultMessage(run: RunRecord, fallback: string): string {

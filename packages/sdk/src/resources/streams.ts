@@ -48,9 +48,10 @@ export interface SubscribeWithEventOptions extends SubscribeWithEventParams {
    * stream before the published event's run ends.
    *
    * - `true` (default) — reconnect using the existing `stream_id`, dedup
-   *   `run:*` events by `run_id`, stop after the terminal event of the
-   *   event's run (a `run:fail` with status `pending_retry` is not terminal:
-   *   the iterator follows the retry run).
+   *   `run:*` events by `run_id`, stop after the final event of the event's
+   *   run. Status `pending_retry` is never final (the iterator follows the
+   *   retry run), and a failure that reports a scheduled retry is held for
+   *   5 s for that retry run; if none appears, the iterator ends after it.
    * - `false` — return after the single connection ends, as in 1.0.x.
    * - Object — reconnect with custom options.
    */
@@ -105,8 +106,10 @@ export class StreamsResource {
       (typeof options?.reconnect === "object" ? options.reconnect.maxAttempts : undefined)
       ?? DEFAULT_MAX_RECONNECT_ATTEMPTS;
     return followStream({
-      open: () => this.subscribeWithEventOnce(body, options, STREAM_IDLE_TIMEOUT_MS),
-      reopen: (streamId) => this.subscribeOnce(streamId, options, STREAM_IDLE_TIMEOUT_MS),
+      signal: options?.signal,
+      open: (signal) => this.subscribeWithEventOnce(body, { ...options, signal }, STREAM_IDLE_TIMEOUT_MS),
+      reopen: (streamId, signal) =>
+        this.subscribeOnce(streamId, { ...options, signal }, STREAM_IDLE_TIMEOUT_MS),
       correlator: new RunCorrelator(),
       reconnector: new Reconnector({
         maxAttempts,

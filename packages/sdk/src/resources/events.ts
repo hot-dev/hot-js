@@ -54,12 +54,14 @@ export class EventsResource {
   ): Promise<unknown> {
     const run = await waitForCorrelatedRun(
       (signal, reconnector, correlator) => followStream({
-        open: () => this.streams.subscribeWithEventOnce(
+        signal,
+        open: (connection) => this.streams.subscribeWithEventOnce(
           { event_type: "hot:call", event_data: { fn, args } },
-          { signal },
+          { signal: connection },
           STREAM_IDLE_TIMEOUT_MS,
         ),
-        reopen: (streamId) => this.streams.subscribeOnce(streamId, { signal }, STREAM_IDLE_TIMEOUT_MS),
+        reopen: (streamId, connection) =>
+          this.streams.subscribeOnce(streamId, { signal: connection }, STREAM_IDLE_TIMEOUT_MS),
         correlator,
         reconnector,
         retryOpen: true,
