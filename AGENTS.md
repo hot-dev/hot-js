@@ -73,11 +73,11 @@ This repo requires **pnpm**, not npm. If `pnpm install` fails with a Corepack si
 
 ## Integration Tests
 
-`integration/run.sh` starts a scratch `hot dev` (requires the `hot` CLI and
-python3 on PATH) serving the Hot fixture project in `integration/fixture`
+`integration/run.sh` starts a scratch `hot dev` (requires the `hot` CLI on
+PATH) serving the Hot fixture project in `integration/fixture`
 (project `sdk-fixture`: an echo event handler, an always-failing handler and
 function, a retrying handler, a streaming function, and hot:call targets). It binds 127.0.0.1 on HOT_TEST_PORT (default
-4724), mints a full-access API key directly in the fixture's sqlite database,
+4724), mints a full-access API key with `hot key create`,
 exports HOT_TEST_BASE_URL / HOT_TEST_API_KEY, and runs `vitest run test/integration.test.ts` in packages/sdk.
 The integration tests skip when HOT_TEST_API_KEY is unset, so regular test
 runs are unaffected. The fixture pins the API to 127.0.0.1 because binding
@@ -97,7 +97,7 @@ lockstep. Checklist for a coordinated release:
 3. Run every repo's `integration/run.sh`.
 4. Commit, tag `v<version>`, push in each repo.
 
-The integration fixture (integration/fixture, mint_key.py, run.sh,
+The integration fixture (integration/fixture, run.sh,
 suborg_fixture.py) is duplicated across all five repos; the canonical copy lives
 in **hot-python** — change it there first, then sync the others.
 
