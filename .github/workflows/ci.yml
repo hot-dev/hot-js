@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Weekly: run the org API isolation job against hot main to catch API drift.
+  schedule:
+    - cron: "17 6 * * 1"
   workflow_dispatch:
 
 permissions:
@@ -30,7 +33,7 @@ jobs:
       - name: Enable pnpm
         run: |
           corepack enable
-          corepack prepare pnpm@10.11.0 --activate
+          corepack prepare pnpm@10.34.9 --activate
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -47,6 +50,36 @@ jobs:
       - name: Build
         run: pnpm build
 
+  test-node:
+    name: Test (Node ${{ matrix.node }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        # The published package supports Node 20+.
+        node: ['20', '22', '24']
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: ${{ matrix.node }}
+          package-manager-cache: false
+
+      - name: Enable pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@10.34.9 --activate
+
+      # The build toolchain (tsup 9) needs Node 22+, so skip install scripts
+      # and run the tests from source.
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Test
+        run: pnpm test
+
   integration:
     name: Integration (hot dev)
     runs-on: ubuntu-latest
@@ -62,7 +95,7 @@ jobs:
       - name: Enable pnpm
         run: |
           corepack enable
-          corepack prepare pnpm@10.11.0 --activate
+          corepack prepare pnpm@10.34.9 --activate
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -74,7 +107,7 @@ jobs:
         run: ./integration/run.sh
 
   postgres-isolation:
-    name: PostgreSQL Sub-org Isolation
+    name: Org API isolation (PostgreSQL)
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
@@ -90,15 +123,17 @@ jobs:
 
       # A released CLI may lag these API changes. Pin the tested server source
       # separately so its schema, runtime qualification, and OpenAPI agree.
+      # The weekly scheduled run builds hot main instead, to catch drift.
       - name: Checkout matching Hot server
         uses: actions/checkout@v5
         with:
           repository: hot-dev/hot
-          ref: d5dde712f447daf88c38e5546f805496c46a2877 # Keep aligned with integration/hot-server.ref
+          ref: ${{ github.event_name == 'schedule' && 'main' || 'd5dde712f447daf88c38e5546f805496c46a2877' }} # Keep aligned with integration/hot-server.ref
           path: .hot-server
           persist-credentials: false
 
       - name: Verify matching Hot revision
+        if: github.event_name != 'schedule'
         shell: bash
         run: |
           expected="$(cat integration/hot-server.ref)"
@@ -128,7 +163,7 @@ jobs:
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           workspaces: .hot-server -> target
-          key: postgres-isolation-${{ hashFiles('integration/hot-server.ref') }}
+          key: postgres-isolation-${{ github.event_name == 'schedule' && 'main' || hashFiles('integration/hot-server.ref') }}
           cache-workspace-crates: "true"
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
@@ -149,13 +184,13 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v5
         with:
-          node-version: 24
+          node-version: '24.22.1'
           package-manager-cache: false
 
       - name: Install JavaScript dependencies
         run: |
           corepack enable
-          corepack prepare pnpm@10.11.0 --activate
+          corepack prepare pnpm@10.34.9 --activate
           pnpm install --frozen-lockfile
 
       - name: Test PostgreSQL isolation with restricted runtime credentials
