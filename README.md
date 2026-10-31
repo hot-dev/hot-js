@@ -8,9 +8,10 @@ Official JavaScript/TypeScript SDK for the [Hot Dev](https://hot.dev) API.
 npm install @hot-dev/sdk
 ```
 
-The published SDK supports Node 20+. Development and CI use Node 24.22.1, pinned in `.node-version`. Server-side only — use a backend proxy for browser apps (see `@hot-dev/sdk/proxy`).
-Most management endpoints require an API key; sessions and service keys are
-permission-scoped and are mainly for event publishing and stream reads.
+The published SDK supports Node 20+ (CI tests Node 20, 22 and 24). Development and CI builds use Node 24.22.1, pinned in `.node-version`. Server-side only — use a backend proxy for browser apps (see `@hot-dev/sdk/proxy`, which requires an event type allow-list).
+Most administrative endpoints require an API key; sessions and service keys are
+permission-scoped and are mainly for event publishing and stream reads. The org
+API (`hot.orgs`, `hot.apiKeys`) takes an org API key instead.
 
 ## Quick start
 
@@ -70,11 +71,18 @@ const hot = new HotClient({
 await hot.events.publish(event);
 ```
 
-## Retries
+## Retries and timeouts
 
-JSON requests are retried automatically (at most twice) when the API responds
-429 with a `retry_after`; other errors are thrown as-is. Streaming and raw
-requests are never retried.
+JSON requests time out after `timeoutMs` (client option, default 60 s) and are
+retried at most twice: on a 429 that carries `retry_after`, and for GET, HEAD,
+PUT and DELETE on a 502, 503 or 504. Other errors are thrown as-is. Streaming
+and raw requests are not retried.
+
+Durable waiters (`runs.wait`, `tasks.wait`, `streams.subscribeWithEvent`,
+`events.callHot`, `waitForRunResult`) stop on permanent 4xx errors, reconnect
+after transport errors, 408, 429 and 5xx with jittered backoff, and treat the
+server's 5-minute stream rollovers as healthy. See
+[the package README](./packages/sdk/README.md#durable-waits-and-reconnects).
 
 ## Casing policy
 
@@ -87,7 +95,7 @@ Core API request and response types use the Hot API wire format (`event_type`,
 
 | Import | Purpose |
 |--------|---------|
-| `@hot-dev/sdk` | `HotClient`, core types, `HotApiError` |
+| `@hot-dev/sdk` | `HotClient`, core types, `HotApiError`, `HotKeyScopeError` |
 | `@hot-dev/sdk/streaming` | SSE parsing, `waitForRunResult` |
 | `@hot-dev/sdk/agent` | Agent event payloads, slash commands, reply folding |
 | `@hot-dev/sdk/webhook` | Webhook URL builder and POST helper |

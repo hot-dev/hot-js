@@ -28,8 +28,12 @@ Server-side only for authenticated API calls. Browser clients should proxy throu
 pnpm install
 pnpm build
 pnpm test
-pnpm typecheck
+pnpm typecheck   # sources, tests (tsconfig.test.json) and README TypeScript snippets
 ```
+
+README TypeScript blocks are compiled by `packages/sdk/scripts/typecheck-snippets.mjs`.
+Names an example leaves to the reader (`hot`, `runId`, `taskId`, `taskIds`,
+`requireUser`) are declared in its prelude; add new ones there.
 
 ## CI and Releases
 
@@ -72,7 +76,7 @@ This repo requires **pnpm**, not npm. If `pnpm install` fails with a Corepack si
 `integration/run.sh` starts a scratch `hot dev` (requires the `hot` CLI and
 python3 on PATH) serving the Hot fixture project in `integration/fixture`
 (project `sdk-fixture`: an echo event handler, an always-failing handler and
-function, and hot:call targets). It binds 127.0.0.1 on HOT_TEST_PORT (default
+function, a retrying handler, a streaming function, and hot:call targets). It binds 127.0.0.1 on HOT_TEST_PORT (default
 4724), mints a full-access API key directly in the fixture's sqlite database,
 exports HOT_TEST_BASE_URL / HOT_TEST_API_KEY, and runs `vitest run test/integration.test.ts` in packages/sdk.
 The integration tests skip when HOT_TEST_API_KEY is unset, so regular test
@@ -93,6 +97,11 @@ lockstep. Checklist for a coordinated release:
 3. Run every repo's `integration/run.sh`.
 4. Commit, tag `v<version>`, push in each repo.
 
-The integration fixture (integration/fixture, mint_key.py, run.sh) is
-duplicated across all five repos; the canonical copy lives in **hot-python** —
-change it there first, then sync the others.
+The integration fixture (integration/fixture, mint_key.py, run.sh,
+suborg_fixture.py) is duplicated across all five repos; the canonical copy lives
+in **hot-python** — change it there first, then sync the others.
+
+`integration/suborg_fixture.py` runs the org API tests
+(`test/suborg-integration.test.ts`) against a Hot build of the revision in
+`integration/hot-server.ref`; CI's "Org API isolation (PostgreSQL)" job builds
+that revision, and a weekly scheduled run builds hot `main` to catch API drift.
