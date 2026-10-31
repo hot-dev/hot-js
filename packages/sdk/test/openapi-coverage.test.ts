@@ -28,9 +28,10 @@ const coverage: Record<string, CoverageEntry> = {
   "POST /v1/orgs/{org_id}/api-keys": { sdk: "orgs.createApiKey" },
   "GET /v1/orgs/{org_id}/envs/{env_id}/api-keys": { sdk: "orgs.listEnvApiKeys" },
   "POST /v1/orgs/{org_id}/envs/{env_id}/api-keys": { sdk: "orgs.createEnvApiKey" },
-  // The server documents one forwarded route; the scope also reaches the
+  // The server documents two forwarded routes; the scope also reaches the
   // other project, context and build routes under the same prefix.
   "GET /v1/orgs/{org_id}/envs/{env_id}/projects": { sdk: "orgEnv.projects.list" },
+  "GET /v1/orgs/{org_id}/envs/{env_id}/builds": { sdk: "orgEnv.builds.list" },
   "GET /v1/api-keys/{key_id}": { sdk: "apiKeys.get" },
   "PATCH /v1/api-keys/{key_id}": { sdk: "apiKeys.update" },
   "DELETE /v1/api-keys/{key_id}": { sdk: "apiKeys.revoke" },
@@ -104,6 +105,7 @@ const coverage: Record<string, CoverageEntry> = {
   "PUT /v1/files/uploads/{upload_id}/{part_number}": { sdk: "files.uploadPart" },
   "POST /v1/files/uploads/{upload_id}/complete": { sdk: "files.completeUpload" },
   "DELETE /v1/files/uploads/{upload_id}": { sdk: "files.abortUpload" },
+  "GET /v1/blobs/{blob_ref_id}/download": { sdk: "blobs.download" },
 };
 
 const hot = new HotClient({

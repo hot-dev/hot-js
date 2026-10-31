@@ -1,4 +1,5 @@
 import { HttpClient, type RequestOptions } from "./http.js";
+import { BlobsResource } from "./resources/blobs.js";
 import { BuildsResource } from "./resources/builds.js";
 import { ContextResource } from "./resources/context.js";
 import { DomainsResource } from "./resources/domains.js";
@@ -24,6 +25,7 @@ export interface HotRequestInit extends RequestOptions {
 export class HotClient {
   readonly http: HttpClient;
   readonly apiKeys: ApiKeysResource;
+  readonly blobs: BlobsResource;
   readonly builds: BuildsResource;
   readonly context: ContextResource;
   readonly domains: DomainsResource;
@@ -42,6 +44,7 @@ export class HotClient {
   constructor(options: HotClientOptions) {
     this.http = new HttpClient(options);
     this.apiKeys = new ApiKeysResource(this.http);
+    this.blobs = new BlobsResource(this.http);
     this.builds = new BuildsResource(this.http);
     this.context = new ContextResource(this.http);
     this.domains = new DomainsResource(this.http);

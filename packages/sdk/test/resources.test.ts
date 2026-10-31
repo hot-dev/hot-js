@@ -50,6 +50,7 @@ describe("HotClient resource coverage", () => {
     await hot.files.list({ prefix: "logs/", limit: 5 });
     await hot.files.get("file_1");
     await hot.files.download("file_1");
+    await hot.blobs.download("blob_1");
     await hot.files.upload("logs/a b.txt", "hello");
     await hot.files.initiateUpload({ path: "logs/big.bin", expected_size: 10 });
     await hot.files.uploadPart("upload_1", 1, "part");
@@ -121,6 +122,7 @@ describe("HotClient resource coverage", () => {
       "GET /v1/files",
       "GET /v1/files/file_1",
       "GET /v1/files/file_1/download",
+      "GET /v1/blobs/blob_1/download",
       "PUT /v1/files/upload/logs/a%20b.txt",
       "POST /v1/files/uploads",
       "PUT /v1/files/uploads/upload_1/1",
@@ -170,5 +172,45 @@ describe("HotClient resource coverage", () => {
       "POST /v1/streams/stream_1/subscribe",
       "POST /v1/streams/subscribe-with-event",
     ]);
+  });
+
+  it("downloads a blob as a raw response with an encoded id and the caller's signal", async () => {
+    const seen: { method?: string; url: string; signal?: AbortSignal | null }[] = [];
+    const controller = new AbortController();
+    const hot = new HotClient({
+      baseUrl: "http://hot.test",
+      token: "test-token",
+      fetch: async (input, init) => {
+        seen.push({
+          method: init?.method,
+          url: input instanceof Request ? input.url : String(input),
+          signal: init?.signal,
+        });
+        return new Response(new Uint8Array([0, 1, 2, 255]), {
+          headers: { "Content-Type": "application/octet-stream" },
+        });
+      },
+    });
+
+    const response = await hot.blobs.download("blob/ref 1", { signal: controller.signal });
+
+    expect(new Uint8Array(await response.arrayBuffer())).toEqual(new Uint8Array([0, 1, 2, 255]));
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.method).toBe("GET");
+    expect(new URL(seen[0]!.url).pathname).toBe("/v1/blobs/blob%2Fref%201/download");
+    expect(seen[0]?.signal).toBe(controller.signal);
+  });
+
+  it("surfaces an API error when a blob download is refused", async () => {
+    const hot = new HotClient({
+      baseUrl: "http://hot.test",
+      token: "test-token",
+      fetch: async () => new Response(
+        JSON.stringify({ error: { code: "not_found", message: "blob not found" } }),
+        { status: 404, headers: { "Content-Type": "application/json" } },
+      ),
+    });
+
+    await expect(hot.blobs.download("missing")).rejects.toMatchObject({ status: 404 });
   });
 });

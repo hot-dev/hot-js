@@ -1,6 +1,7 @@
 export { HotClient, type HotRequestInit } from "./client.js";
 export { HotApiError, HotKeyScopeError, isHotApiError, type KeyScope } from "./errors.js";
 export type { HttpClient, RequestOptions } from "./http.js";
+export { BlobsResource } from "./resources/blobs.js";
 export { BuildsResource, type UploadBuildOptions } from "./resources/builds.js";
 export { ContextResource } from "./resources/context.js";
 export { DomainsResource } from "./resources/domains.js";

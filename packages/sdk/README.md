@@ -91,6 +91,7 @@ await hot.events.publish(event);
 - `hot.runs` — list, inspect, subscribe to, and wait for durable runs
 - `hot.tasks` — get, subscribe to, and wait for durable background tasks
 - `hot.files` — upload, download, list, and delete files (including multipart uploads)
+- `hot.blobs` — download the raw bytes of a large payload spilled to blob storage (environment API key)
 - `hot.projects` — create, list, update, activate, deactivate, and delete projects
 - `hot.builds` — upload, download, deploy, and look up live/deployed builds
 - `hot.context` — manage encrypted project context variables
