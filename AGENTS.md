@@ -60,7 +60,7 @@ Or use hot-chat's `npm run link:sdk`.
 
 ## pnpm / Corepack
 
-This repo requires **pnpm**, not npm. If `pnpm install` fails with a Corepack signature error, use Node 22+ LTS or run `npm install -g corepack@latest && corepack prepare pnpm@10.11.0 --activate`.
+This repo requires **pnpm**, not npm. If `pnpm install` fails with a Corepack signature error, use Node 22+ LTS or run `npm install -g corepack@latest && corepack prepare pnpm@10.34.9 --activate`.
 
 ## Related repos
 

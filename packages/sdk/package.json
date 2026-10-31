@@ -60,8 +60,9 @@
     "node": ">=20"
   },
   "devDependencies": {
-    "tsup": "^8.5.0",
-    "typescript": "^5.8.3",
-    "vitest": "^3.2.1"
+    "@types/node": "^20.19.43",
+    "tsup": "^9.0.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.12"
   }
 }
