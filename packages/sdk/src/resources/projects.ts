@@ -12,17 +12,21 @@ import type {
 const enc = encodeURIComponent;
 
 export class ProjectsResource {
-  constructor(private readonly http: HttpClient) {}
+  /**
+   * @param prefix Path prefix inside `/v1`; `hot.orgs.env(org, env)` sets it to
+   * `/orgs/{org}/envs/{env}` for an org API key.
+   */
+  constructor(private readonly http: HttpClient, private readonly prefix = "") {}
 
   async list(query?: ListQuery, options?: { signal?: AbortSignal }) {
-    return this.http.requestList<ProjectRecord>("GET", "/projects", {
+    return this.http.requestList<ProjectRecord>("GET", `${this.prefix}/projects`, {
       query,
       signal: options?.signal,
     });
   }
 
   async create(body: CreateProjectRequest, options?: { signal?: AbortSignal }) {
-    const envelope = await this.http.requestJson<ProjectRecord>("POST", "/projects", {
+    const envelope = await this.http.requestJson<ProjectRecord>("POST", `${this.prefix}/projects`, {
       body: JSON.stringify(body),
       signal: options?.signal,
     });
@@ -30,14 +34,14 @@ export class ProjectsResource {
   }
 
   async get(project: string, options?: { signal?: AbortSignal }) {
-    const envelope = await this.http.requestJson<ProjectRecord>("GET", `/projects/${enc(project)}`, {
+    const envelope = await this.http.requestJson<ProjectRecord>("GET", `${this.prefix}/projects/${enc(project)}`, {
       signal: options?.signal,
     });
     return envelope.data;
   }
 
   async update(project: string, body: UpdateProjectRequest, options?: { signal?: AbortSignal }) {
-    const envelope = await this.http.requestJson<ProjectRecord>("PATCH", `/projects/${enc(project)}`, {
+    const envelope = await this.http.requestJson<ProjectRecord>("PATCH", `${this.prefix}/projects/${enc(project)}`, {
       body: JSON.stringify(body),
       signal: options?.signal,
     });
@@ -45,7 +49,7 @@ export class ProjectsResource {
   }
 
   async delete(project: string, options?: { signal?: AbortSignal }) {
-    await this.http.requestRaw("DELETE", `/projects/${enc(project)}`, {
+    await this.http.requestVoid("DELETE", `${this.prefix}/projects/${enc(project)}`, {
       signal: options?.signal,
     });
   }
@@ -53,7 +57,7 @@ export class ProjectsResource {
   async activate(project: string, options?: { signal?: AbortSignal }) {
     const envelope = await this.http.requestJson<ProjectActivateResponse>(
       "POST",
-      `/projects/${enc(project)}/activate`,
+      `${this.prefix}/projects/${enc(project)}/activate`,
       { signal: options?.signal },
     );
     return envelope.data;
@@ -62,7 +66,7 @@ export class ProjectsResource {
   async deactivate(project: string, options?: { signal?: AbortSignal }) {
     const envelope = await this.http.requestJson<ProjectActivateResponse>(
       "POST",
-      `/projects/${enc(project)}/deactivate`,
+      `${this.prefix}/projects/${enc(project)}/deactivate`,
       { signal: options?.signal },
     );
     return envelope.data;
@@ -71,7 +75,7 @@ export class ProjectsResource {
   async eventHandlers(project: string, options?: { signal?: AbortSignal }) {
     return this.http.requestList<EventHandlerRecord>(
       "GET",
-      `/projects/${enc(project)}/event-handlers`,
+      `${this.prefix}/projects/${enc(project)}/event-handlers`,
       { signal: options?.signal },
     );
   }
@@ -79,7 +83,7 @@ export class ProjectsResource {
   async schedules(project: string, options?: { signal?: AbortSignal }) {
     return this.http.requestList<ScheduleRecord>(
       "GET",
-      `/projects/${enc(project)}/schedules`,
+      `${this.prefix}/projects/${enc(project)}/schedules`,
       { signal: options?.signal },
     );
   }

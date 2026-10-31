@@ -26,9 +26,26 @@ describe("consumeSseBlocks", () => {
     expect(events).toHaveLength(2);
   });
 
-  it("preserves unknown typed events", () => {
+  it("wraps unknown typed events so StreamEvent narrows on type", () => {
     const input = 'data: {"type":"custom:event","value":1}\n\n';
     const [events] = consumeSseBlocks(input);
-    expect(events).toEqual([{ type: "custom:event", value: 1 }]);
+    expect(events).toEqual([
+      { type: "unknown", event_type: "custom:event", data: { type: "custom:event", value: 1 } },
+    ]);
+  });
+
+  it("narrows known events at compile time", () => {
+    const [events] = consumeSseBlocks(
+      'data: {"type":"run:stop","run":{"run_id":"r1","result":{"answer":42}}}\n\n'
+      + 'data: {"type":"stream:data","run_id":"r1","data_type":"ai:delta","payload":{"text":"hi"}}\n\n',
+    );
+    const seen: unknown[] = [];
+    for (const event of events) {
+      // These property accesses only compile when the union narrows.
+      if (event.type === "run:stop") seen.push(event.run?.result);
+      if (event.type === "stream:data") seen.push(event.payload?.text, event.data_type);
+      if (event.type === "unknown") seen.push(event.event_type);
+    }
+    expect(seen).toEqual([{ answer: 42 }, "hi", "ai:delta"]);
   });
 });

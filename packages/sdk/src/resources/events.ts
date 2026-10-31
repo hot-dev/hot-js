@@ -1,14 +1,7 @@
 import type { HttpClient } from "../http.js";
-import { mergeAbortSignals, runResultMessage } from "../streaming/wait.js";
+import { followStream, RunCorrelator, STREAM_IDLE_TIMEOUT_MS } from "../streaming/durable.js";
+import { waitForCorrelatedRun, type WaitForRunOptions } from "../streaming/wait.js";
 import { StreamsResource } from "./streams.js";
-import type {
-  EventPublishedEvent,
-  RunCancelEvent,
-  RunFailEvent,
-  RunStartEvent,
-  RunStopEvent,
-  StreamDataEvent,
-} from "../streaming/types.js";
 import type { EventRecord, ListQuery, PublishEventRequest, RunRecord } from "../types.js";
 
 export class EventsResource {
@@ -46,47 +39,36 @@ export class EventsResource {
     });
   }
 
-  /** Publish a `hot:call` event and wait for the matching run result. */
+  /**
+   * Publish a `hot:call` event and wait for the matching run result.
+   *
+   * Reconnects across the server's 5-minute stream limit and follows a
+   * `pending_retry` attempt to its retry run. `onChunk` receives the `text`
+   * of each `stream:data` payload in order, including chunks that arrive
+   * before `run:start`.
+   */
   async callHot(
     fn: string,
     args: unknown[] = [],
-    options?: { timeoutMs?: number; signal?: AbortSignal; onChunk?: (text: string) => void },
+    options?: WaitForRunOptions,
   ): Promise<unknown> {
-    const controller = new AbortController();
-    const timeout = setTimeout(
-      () => controller.abort(new Error("Timeout waiting for run result")),
-      options?.timeoutMs ?? 60_000,
+    const run = await waitForCorrelatedRun(
+      (signal, reconnector, correlator) => followStream({
+        open: () => this.streams.subscribeWithEventOnce(
+          { event_type: "hot:call", event_data: { fn, args } },
+          { signal },
+          STREAM_IDLE_TIMEOUT_MS,
+        ),
+        reopen: (streamId) => this.streams.subscribeOnce(streamId, { signal }, STREAM_IDLE_TIMEOUT_MS),
+        correlator,
+        reconnector,
+        retryOpen: true,
+      }),
+      new RunCorrelator(),
+      "Timeout waiting for run result",
+      options,
     );
-    const signal = mergeAbortSignals([options?.signal, controller.signal]);
-    let eventId: string | undefined;
-    let runId: string | undefined;
-
-    try {
-      for await (const event of this.streams.subscribeWithEvent({
-        event_type: "hot:call",
-        event_data: { fn, args },
-      }, { signal })) {
-        if (event.type === "event:published") {
-          eventId = (event as EventPublishedEvent).event_id;
-        } else if (event.type === "run:start") {
-          const run = (event as RunStartEvent).run;
-          if (run && eventId && run.event_id === eventId) runId = run.run_id;
-        } else if (event.type === "stream:data") {
-          const data = event as StreamDataEvent;
-          const text = data.payload?.text;
-          if (data.run_id === runId && typeof text === "string") options?.onChunk?.(text);
-        } else if (event.type === "run:stop" || event.type === "run:fail" || event.type === "run:cancel") {
-          const run = (event as RunStopEvent | RunFailEvent | RunCancelEvent).run;
-          if (!run || run.event_id !== eventId) continue;
-          if (event.type === "run:fail") throw new Error(runResultMessage(run, "Run failed"));
-          if (event.type === "run:cancel") throw new Error(runResultMessage(run, "Run cancelled"));
-          return extractRunResult(run.result);
-        }
-      }
-      throw new Error("Stream ended before run completed");
-    } finally {
-      clearTimeout(timeout);
-    }
+    return extractRunResult(run.result);
   }
 }
 

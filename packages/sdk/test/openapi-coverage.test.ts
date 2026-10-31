@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import { HotClient } from "../src/client.js";
-import { HotManagementClient } from "../src/management.js";
 import operations from "./fixtures/openapi-operations.json";
 
 interface OpenApiOperation {
@@ -16,12 +15,29 @@ type CoverageEntry =
     };
 
 const coverage: Record<string, CoverageEntry> = {
-  "GET /v1/management/children": { sdk: "management.listChildren" },
-  "POST /v1/management/children": { sdk: "management.createChild" },
-  "PATCH /v1/management/children/{child_id}/state": { sdk: "management.setChildState" },
-  "POST /v1/management/children/{child_id}/environments": { sdk: "management.createEnvironment" },
-  "POST /v1/management/children/{child_id}/environments/{env_id}/api-keys": { sdk: "management.createApiKey" },
-  "GET /v1/management/usage": { sdk: "management.usage" },
+  "GET /v1/orgs": { sdk: "orgs.list" },
+  "POST /v1/orgs": { sdk: "orgs.create" },
+  "GET /v1/orgs/{org_id}": { sdk: "orgs.get" },
+  "PATCH /v1/orgs/{org_id}": { sdk: "orgs.update" },
+  "GET /v1/orgs/{org_id}/usage": { sdk: "orgs.usage" },
+  "DELETE /v1/orgs/{org_id}/calls": { sdk: "orgs.purgeCalls" },
+  "GET /v1/orgs/{org_id}/envs": { sdk: "orgs.listEnvs" },
+  "POST /v1/orgs/{org_id}/envs": { sdk: "orgs.createEnv" },
+  "GET /v1/orgs/{org_id}/envs/{env_id}": { sdk: "orgs.getEnv" },
+  "GET /v1/orgs/{org_id}/api-keys": { sdk: "orgs.listApiKeys" },
+  "POST /v1/orgs/{org_id}/api-keys": { sdk: "orgs.createApiKey" },
+  "GET /v1/orgs/{org_id}/envs/{env_id}/api-keys": { sdk: "orgs.listEnvApiKeys" },
+  "POST /v1/orgs/{org_id}/envs/{env_id}/api-keys": { sdk: "orgs.createEnvApiKey" },
+  // The server documents one forwarded route; the scope also reaches the
+  // other project, context and build routes under the same prefix.
+  "GET /v1/orgs/{org_id}/envs/{env_id}/projects": { sdk: "orgEnv.projects.list" },
+  "GET /v1/api-keys/{key_id}": { sdk: "apiKeys.get" },
+  "PATCH /v1/api-keys/{key_id}": { sdk: "apiKeys.update" },
+  "DELETE /v1/api-keys/{key_id}": { sdk: "apiKeys.revoke" },
+  "POST /v1/api-keys/{key_id}/rotate": { sdk: "apiKeys.rotate" },
+  "DELETE /v1/env/calls": { sdk: "env.purgeCalls" },
+  "DELETE /v1/runs/{run_id}/calls": { sdk: "runs.purgeCalls" },
+  "DELETE /v1/streams/{stream_id}/calls": { sdk: "streams.purgeCalls" },
 
   "GET /status": {
     ignored: true,
@@ -133,8 +149,8 @@ function operationKey(operation: OpenApiOperation): string {
 }
 
 function resolveSdkMethod(path: string): unknown {
-  let value: unknown = path.startsWith("management.")
-    ? { management: new HotManagementClient({ token: "hm_test" }) } : hot;
+  let value: unknown = path.startsWith("orgEnv.")
+    ? { orgEnv: hot.orgs.env("org_1", "env_1") } : hot;
   for (const part of path.split(".")) {
     if (typeof value !== "object" || value === null || !(part in value)) {
       return undefined;

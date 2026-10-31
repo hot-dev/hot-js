@@ -50,23 +50,22 @@ export interface TaskUpdateEvent {
   task: TaskRecord;
 }
 
-export interface UnknownStreamEvent {
-  type: Exclude<
-    string,
-    | "event:published"
-    | "stream:data"
-    | "run:start"
-    | "run:stop"
-    | "run:fail"
-    | "run:cancel"
-    | "run:update"
-    | "stream:complete"
-    | "task:update"
-  >;
-  [key: string]: unknown;
+export interface KeepaliveEvent {
+  type: "keepalive";
 }
 
-export type StreamEvent =
+/**
+ * An event whose `type` this SDK version does not know, wrapped so that the
+ * `StreamEvent` union narrows on `type`. `event_type` is the original type and
+ * `data` the original payload.
+ */
+export interface UnknownStreamEvent {
+  type: "unknown";
+  event_type: string;
+  data: Record<string, unknown>;
+}
+
+export type KnownStreamEvent =
   | EventPublishedEvent
   | StreamDataEvent
   | RunStartEvent
@@ -76,34 +75,64 @@ export type StreamEvent =
   | RunUpdateEvent
   | StreamCompleteEvent
   | TaskUpdateEvent
-  | UnknownStreamEvent;
+  | KeepaliveEvent;
+
+export type StreamEvent = KnownStreamEvent | UnknownStreamEvent;
+
+const KNOWN_STREAM_EVENT_TYPES: ReadonlySet<string> = new Set<KnownStreamEvent["type"]>([
+  "event:published",
+  "stream:data",
+  "run:start",
+  "run:stop",
+  "run:fail",
+  "run:cancel",
+  "run:update",
+  "stream:complete",
+  "task:update",
+  "keepalive",
+]);
+
+/**
+ * Turn a parsed SSE payload into a `StreamEvent`. Known types pass through;
+ * others are wrapped as `UnknownStreamEvent`. Returns undefined for payloads
+ * without a string `type`.
+ */
+export function toStreamEvent(value: unknown): StreamEvent | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const type = (value as { type?: unknown }).type;
+  if (typeof type !== "string") return undefined;
+  if (KNOWN_STREAM_EVENT_TYPES.has(type)) return value as KnownStreamEvent;
+  return { type: "unknown", event_type: type, data: value as Record<string, unknown> };
+}
 
 export function runIdFromEvent(event: StreamEvent): string | undefined {
   switch (event.type) {
     case "run:start":
     case "run:stop":
     case "run:fail":
-    case "run:cancel": {
-      const runEvent = event as RunStartEvent | RunStopEvent | RunFailEvent | RunCancelEvent;
-      return runEvent.run?.run_id;
-    }
+    case "run:cancel":
+      return event.run?.run_id;
     case "run:update":
-      return (event as RunUpdateEvent).run.run_id;
-    case "stream:data": {
-      const data = event as StreamDataEvent;
-      return data.run_id;
-    }
+      return event.run.run_id;
+    case "stream:data":
+      return event.run_id;
     default:
       return undefined;
   }
 }
 
-export function isStreamEvent(value: unknown): value is StreamEvent {
-  if (typeof value !== "object" || value === null || !("type" in value)) {
-    return false;
-  }
-  const type = (value as { type: unknown }).type;
-  return typeof type === "string";
+/** Whether `value` is an event this SDK knows (an `UnknownStreamEvent` is not). */
+export function isStreamEvent(value: unknown): value is KnownStreamEvent {
+  if (typeof value !== "object" || value === null) return false;
+  const type = (value as { type?: unknown }).type;
+  return typeof type === "string" && KNOWN_STREAM_EVENT_TYPES.has(type);
+}
+
+/** Whether a `run:*` lifecycle event is terminal (stop, fail or cancel). */
+export function isRunTerminalEvent(
+  event: StreamEvent,
+): event is RunStopEvent | RunFailEvent | RunCancelEvent {
+  return event.type === "run:stop" || event.type === "run:fail" || event.type === "run:cancel";
 }
 
 export function eventIdFromRun(run: RunRecord | undefined): string | undefined {

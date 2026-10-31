@@ -92,6 +92,27 @@ describe.skipIf(!apiKey)("hot dev integration", () => {
     await expect(hot.events.callHot("::fixture::sdk/add-nums", [2, 3])).resolves.toBe(5);
   });
 
+  it("delivers stream chunks that arrive before run:start", { timeout: 60_000 }, async () => {
+    const hot = client();
+    const chunks: string[] = [];
+    await expect(hot.events.callHot("::fixture::sdk/stream-chunks", [], {
+      onChunk: (text) => chunks.push(text),
+    })).resolves.toBe("done");
+    expect(chunks).toEqual(["a", "b", "c"]);
+  });
+
+  it("follows a retrying handler to its retry run", { timeout: 60_000 }, async () => {
+    const hot = client();
+    const statuses: string[] = [];
+    let result: unknown;
+    for await (const event of hot.streams.subscribeWithEvent({ event_type: "sdk:flaky", event_data: {} })) {
+      if (event.type === "run:fail" || event.type === "run:stop") statuses.push(event.run?.status ?? "");
+      if (event.type === "run:stop") result = event.run?.result;
+    }
+    expect(statuses).toEqual(["pending_retry", "succeeded"]);
+    expect(result).toEqual({ recovered: true, attempt: 1 });
+  });
+
   it("surfaces run failure messages", { timeout: 60_000 }, async () => {
     const hot = client();
     await expect(hot.events.callHot("::fixture::sdk/always-fail")).rejects.toThrow(

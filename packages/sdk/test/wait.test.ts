@@ -23,7 +23,7 @@ describe("waitForRunResult", () => {
       baseUrl: "http://hot.test",
       token: "test-token",
       fetch: async (input, init) => {
-        const url = typeof input === "string" ? input : input.url;
+        const url = input instanceof Request ? input.url : String(input);
         const { pathname } = new URL(url);
 
         if (init?.method === "POST" && pathname === "/v1/streams/subscribe-with-event") {
@@ -46,7 +46,7 @@ describe("waitForRunResult", () => {
       baseUrl: "http://hot.test",
       token: "test-token",
       fetch: async (input, init) => {
-        const url = typeof input === "string" ? input : input.url;
+        const url = input instanceof Request ? input.url : String(input);
         const { pathname } = new URL(url);
 
         if (init?.method === "POST" && pathname === "/v1/streams/subscribe-with-event") {

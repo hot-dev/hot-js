@@ -29,7 +29,7 @@ export class FilesResource {
   }
 
   async delete(fileId: string, options?: { signal?: AbortSignal }) {
-    await this.http.requestRaw("DELETE", `/files/${enc(fileId)}`, {
+    await this.http.requestVoid("DELETE", `/files/${enc(fileId)}`, {
       signal: options?.signal,
     });
   }
@@ -89,7 +89,7 @@ export class FilesResource {
   }
 
   async abortUpload(uploadId: string, options?: { signal?: AbortSignal }) {
-    await this.http.requestRaw("DELETE", `/files/uploads/${enc(uploadId)}`, {
+    await this.http.requestVoid("DELETE", `/files/uploads/${enc(uploadId)}`, {
       signal: options?.signal,
     });
   }
