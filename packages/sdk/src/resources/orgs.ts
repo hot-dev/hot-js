@@ -30,7 +30,7 @@ const enc = encodeURIComponent;
 export class OrgsResource {
   constructor(private readonly http: HttpClient) {}
 
-  /** Children of the key's organization that the key may read. */
+  /** Sub-organizations of the key's organization that the key may read. */
   async list(query?: ListQuery, options?: { signal?: AbortSignal }) {
     return this.http.requestList<OrgRecord>("GET", "/orgs", {
       query,
@@ -39,8 +39,8 @@ export class OrgsResource {
   }
 
   /**
-   * Provision a child organization and its default environment. Replaying the
-   * same `idempotency_key` returns the existing child with `created: false`.
+   * Provision a sub-organization and its default environment. Replaying the
+   * same `idempotency_key` returns the existing sub-organization with `created: false`.
    */
   async create(body: CreateOrgRequest, options?: { signal?: AbortSignal }) {
     const envelope = await this.http.requestJson<CreateOrgResponse>("POST", "/orgs", {
@@ -57,7 +57,7 @@ export class OrgsResource {
     return envelope.data;
   }
 
-  /** Change a child's lifecycle state (`active`, `suspended` or `archived`). */
+  /** Change a sub-organization's lifecycle state (`active`, `suspended` or `archived`). */
   async update(orgId: string, body: UpdateOrgRequest, options?: { signal?: AbortSignal }) {
     const envelope = await this.http.requestJson<OrgRecord>("PATCH", `/orgs/${enc(orgId)}`, {
       body: JSON.stringify(body),
@@ -66,11 +66,11 @@ export class OrgsResource {
     return envelope.data;
   }
 
-  /** Account usage across the root and every child; pass the root org's ID. */
-  async usage(rootOrgId: string, options?: { signal?: AbortSignal }) {
+  /** Account usage across the parent organization and every sub-organization; pass the parent organization's ID. */
+  async usage(parentOrgId: string, options?: { signal?: AbortSignal }) {
     const envelope = await this.http.requestJson<AccountUsage>(
       "GET",
-      `/orgs/${enc(rootOrgId)}/usage`,
+      `/orgs/${enc(parentOrgId)}/usage`,
       { signal: options?.signal },
     );
     return envelope.data;
@@ -78,7 +78,7 @@ export class OrgsResource {
 
   /**
    * Delete every call trace in an organization's environments (and its
-   * children's with `include_sub_orgs`). Repeat while `complete` is false.
+   * sub-organizations' with `include_sub_orgs`). Repeat while `complete` is false.
    */
   async purgeCalls(orgId: string, query?: PurgeOrgCallsQuery, options?: { signal?: AbortSignal }) {
     const envelope = await this.http.requestJson<CallPurgeResponse>(
