@@ -100,7 +100,7 @@ await hot.events.publish(event);
 - `hot.serviceKeys` — create and revoke scoped service keys
 - `hot.org` — view this environment's usage and limits
 - `hot.env` — read environment info, subscribe to environment events, and purge call traces
-- `hot.orgs` and `hot.apiKeys` — the org API (child organizations, environments and API keys); these need an org API key, see [Org API](#org-api)
+- `hot.orgs` and `hot.apiKeys` — the org API (sub-organizations, environments and API keys); these need an org API key, see [Org API](#org-api)
 
 `hot.runs.purgeCalls(runId)`, `hot.streams.purgeCalls(streamId)` and
 `hot.env.purgeCalls()` delete call traces (the runs remain); repeat a purge
@@ -310,7 +310,7 @@ filtered to the runs of the event the request published.
 ## Org API
 
 Organizations, environments and API keys are resources on the normal
-`HotClient`, called with an **org API key** (created by a root admin in the
+`HotClient`, called with an **org API key** (created by an administrator of the parent organization in the
 App). An org key calls only `/v1/orgs` and `/v1/api-keys`; environment API
 keys, service keys and sessions call every other route. Calling a route with
 the wrong kind of key throws `HotKeyScopeError` (`403 key_scope_mismatch`),
@@ -321,22 +321,22 @@ import { HotClient, HotKeyScopeError } from "@hot-dev/sdk";
 
 const org = new HotClient({ token: process.env.HOT_ORG_KEY! });
 
-// Idempotent: replaying the same idempotency_key returns the same child.
-const child = await org.orgs.create({
+// Idempotent: replaying the same idempotency_key returns the same sub-organization.
+const subOrg = await org.orgs.create({
   name: "Customer",
   slug: "customer-unique-slug", // 32 characters or fewer
   external_id: "crm-123",
   idempotency_key: "customer-provisioning-123",
 });
-const env = await org.orgs.createEnv(child.org.org_id, { name: "production" });
+const env = await org.orgs.createEnv(subOrg.org.org_id, { name: "production" });
 
 // Projects, context and builds inside that environment, with the org key.
-const scoped = org.orgs.env(child.org.org_id, env.env_id);
+const scoped = org.orgs.env(subOrg.org.org_id, env.env_id);
 await scoped.projects.create({ name: "backend" });
 await scoped.context.create("backend", { key: "callback.url", value: "https://example.test/hot" });
 
 // Runtime calls need an environment key; mint one within the org key's grants.
-const key = await org.orgs.createEnvApiKey(child.org.org_id, env.env_id, {
+const key = await org.orgs.createEnvApiKey(subOrg.org.org_id, env.env_id, {
   description: "Customer backend",
   permissions: { "event:*": ["create", "read"], "run:*": ["read"], "stream:*": ["read"] },
 });
@@ -352,10 +352,10 @@ try {
 
 | Method | Route |
 | --- | --- |
-| `orgs.list(query?)` | `GET /v1/orgs` — children the key may read (list envelope) |
+| `orgs.list(query?)` | `GET /v1/orgs` — sub-organizations the key may read (list envelope) |
 | `orgs.create(body)` | `POST /v1/orgs` — `{ org, env_id, created }` |
 | `orgs.get(orgId)` / `orgs.update(orgId, { state })` | `GET` / `PATCH /v1/orgs/{org_id}` (`active`, `suspended`, `archived`) |
-| `orgs.usage(rootOrgId)` | `GET /v1/orgs/{org_id}/usage` — account usage; pass the root org's ID |
+| `orgs.usage(parentOrgId)` | `GET /v1/orgs/{org_id}/usage` — account usage; pass the parent organization's ID |
 | `orgs.purgeCalls(orgId, { include_sub_orgs? })` | `DELETE /v1/orgs/{org_id}/calls` |
 | `orgs.listEnvs(orgId)` / `orgs.createEnv(orgId, { name })` / `orgs.getEnv(orgId, envId)` | `/v1/orgs/{org_id}/envs` (create is idempotent by name) |
 | `orgs.listApiKeys(orgId)` / `orgs.createApiKey(orgId, body)` | `/v1/orgs/{org_id}/api-keys` — org keys of the key's own org |
@@ -372,13 +372,13 @@ secret work for `overlap_seconds` (default one day). See
 
 `hot.org.usage()` (an environment-key call) reports only that environment's
 consumption, with `usage_scope: "environment"` and
-`limits_scope: "billing_account"`; use `orgs.usage(rootOrgId)` for the account.
+`limits_scope: "billing_account"`; use `orgs.usage(parentOrgId)` for the account.
 
 For a multi-customer BFF, authorize the signed-in user's target on your
 backend, then choose that environment's client before proxying (see the
 client function form of `createHotProxyRoute`). The proxy never switches scope
 from browser-supplied org IDs. Keep org keys and environment keys server-side.
-Webhook URL helpers use the child's own `orgSlug` and `envName`.
+Webhook URL helpers use the sub-organization's own `orgSlug` and `envName`.
 
 ### Sub-org integration tests
 
@@ -406,7 +406,7 @@ and context calls, identical project names in siblings, foreign-ID and stream
 denial, parent runtime isolation, org/environment key separation
 (`HotKeyScopeError`), usage scope, restricted API-key grants, rotation,
 narrowing and revocation, org key minting, service/session issuance and
-revocation, pre-existing descendant issuer revocation/narrowing, and child
+revocation, pre-existing descendant issuer revocation/narrowing, and sub-organization
 suspension/resumption.
 
 ## License

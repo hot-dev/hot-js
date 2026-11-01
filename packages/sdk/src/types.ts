@@ -569,7 +569,7 @@ export interface CreateOrgRequest {
 
 export interface CreateOrgResponse {
   org: OrgRecord;
-  /** The child's default environment. */
+  /** The sub-organization's default environment. */
   env_id: string;
   /** False when the idempotency key matched an earlier request. */
   created: boolean;
@@ -579,7 +579,7 @@ export interface UpdateOrgRequest {
   state: OrgLifecycle;
 }
 
-/** Account usage for a root org (`GET /v1/orgs/{org_id}/usage`). */
+/** Account usage for a parent organization (`GET /v1/orgs/{org_id}/usage`). */
 export interface AccountUsage {
   org_id: string;
   usage_scope: "account";
@@ -589,7 +589,7 @@ export interface AccountUsage {
 }
 
 export interface PurgeOrgCallsQuery extends Query {
-  /** Also purge the organization's children. */
+  /** Also purge the organization's sub-organizations. */
   include_sub_orgs?: boolean;
 }
 
