@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { HotClient, HotKeyScopeError } from "../src/index.js";
+import { HotClient, HotKeyScopeError, type ApiKeyStatus } from "../src/index.js";
 
 interface Recorded {
   method: string;
@@ -183,5 +183,28 @@ describe("request escape hatch", () => {
     const { hot } = recordingClient(() => new Response("raw bytes"));
     const response = await hot.requestRaw("GET", "/v1/files/f1/download");
     expect(await response.text()).toBe("raw bytes");
+  });
+
+  it("says why a key stopped working", async () => {
+    const { hot } = recordingClient(() => Response.json({
+      data: {
+        api_key_id: "key-1",
+        scope: "env",
+        org_id: "org-1",
+        env_id: "env-1",
+        description: "worker",
+        permissions: {},
+        active: false,
+        status: "issuer_inactive",
+        expires_at: null,
+        issuer_api_key_id: "key-0",
+        created_at: "2026-11-01T10:00:00Z",
+      },
+      meta: {},
+    }));
+
+    const key = await hot.apiKeys.get("key-1");
+    const status: ApiKeyStatus = key.status;
+    expect(status).toBe("issuer_inactive");
   });
 });

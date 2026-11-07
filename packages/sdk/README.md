@@ -101,6 +101,7 @@ await hot.events.publish(event);
 - `hot.org` — view this environment's usage and limits
 - `hot.env` — read environment info, subscribe to environment events, and purge call traces
 - `hot.orgs` and `hot.apiKeys` — the org API (sub-organizations, environments and API keys); these need an org API key, see [Org API](#org-api)
+- `hot.status()` — the server's status and version, from the public `GET /status`
 
 `hot.runs.purgeCalls(runId)`, `hot.streams.purgeCalls(streamId)` and
 `hot.env.purgeCalls()` delete call traces (the runs remain); repeat a purge
@@ -362,6 +363,10 @@ try {
 | `orgs.listEnvApiKeys(orgId, envId)` / `orgs.createEnvApiKey(orgId, envId, body)` | `/v1/orgs/{org_id}/envs/{env_id}/api-keys` |
 | `orgs.env(orgId, envId).projects` / `.context` / `.builds` | `/v1/orgs/{org_id}/envs/{env_id}/projects/...`, `/builds` |
 | `apiKeys.get(id)` / `apiKeys.update(id, { permissions })` / `apiKeys.revoke(id)` / `apiKeys.rotate(id, { overlap_seconds? })` | `/v1/api-keys/{key_id}` |
+
+A key's `status` says why it works or doesn't: `active`, `revoked`, `expired`,
+`issuer_inactive` (a key in its issuer chain stopped) or `suspended` (its
+organization or environment is suspended, and it works again on reactivation).
 
 Minted keys return their `token` once. Grants of a minted key must fit inside
 the minting key's grants; revoking, narrowing or expiring a key restricts

@@ -167,6 +167,12 @@ export interface UpdateContextVariableRequest {
 
 /** Exact wire shape for `POST /v1/events`. User-owned `event_data` is not transformed. */
 export interface PublishEventRequest {
+  /**
+   * Names this event, so a publish is safe to send again: the same id with the
+   * same type, data and stream starts nothing new and gets the first answer.
+   * In use by a different event, it's a 409. Needs Hot 3.0.4 or later.
+   */
+  event_id?: string;
   event_type: string;
   event_data: unknown;
   stream_id?: string;
@@ -202,6 +208,11 @@ export interface RunListQuery extends ListQuery {
   status?: "running" | "succeeded" | "failed" | "cancelled" | string;
   type?: "call" | "event" | "schedule" | "run" | "eval" | "repl" | string;
   time_range?: string;
+  /** Needs a Hot server newer than 3.0.4, as do `stream_id` and `function`. An older one ignores them. */
+  project_id?: string;
+  stream_id?: string;
+  /** The function a run executes, by its whole name, such as `::orders/on-placed`. */
+  function?: string;
 }
 
 export interface EnvInfo {
@@ -615,6 +626,13 @@ export interface CreateEnvRequest {
 
 export type ApiKeyScope = "org" | "env";
 
+/**
+ * Why a key works or doesn't. `issuer_inactive`: a key in its issuer chain is
+ * revoked or expired. `suspended`: its organization or environment is
+ * suspended, and the key works again on reactivation.
+ */
+export type ApiKeyStatus = "active" | "revoked" | "expired" | "issuer_inactive" | "suspended";
+
 export interface ApiKeyRecord {
   api_key_id: string;
   scope: ApiKeyScope;
@@ -622,7 +640,9 @@ export interface ApiKeyRecord {
   env_id: string | null;
   description: string;
   permissions: Permissions;
+  /** False once the key, or a key in its issuer chain, is revoked or expired. A suspension leaves it true. */
   active: boolean;
+  status: ApiKeyStatus;
   expires_at: string | null;
   /** The org key that minted this key; null when a person created it. */
   issuer_api_key_id: string | null;
@@ -649,4 +669,13 @@ export interface UpdateApiKeyRequest {
 export interface RotateApiKeyRequest {
   /** Seconds the previous secret keeps working (default 86400, maximum 604800). */
   overlap_seconds?: number;
+}
+
+/** What `GET /status` answers: a public route, outside `/v1`. */
+export interface ServerStatus {
+  status: string;
+  service: string;
+  version: string;
+  git_sha: string;
+  start_time: string;
 }

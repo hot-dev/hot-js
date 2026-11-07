@@ -40,10 +40,7 @@ const coverage: Record<string, CoverageEntry> = {
   "DELETE /v1/runs/{run_id}/calls": { sdk: "runs.purgeCalls" },
   "DELETE /v1/streams/{stream_id}/calls": { sdk: "streams.purgeCalls" },
 
-  "GET /status": {
-    ignored: true,
-    reason: "Public health endpoint, not part of authenticated SDK Layer 1 resources.",
-  },
+  "GET /status": { sdk: "status" },
   "GET /v1/projects": { sdk: "projects.list" },
   "POST /v1/projects": { sdk: "projects.create" },
   "GET /v1/projects/{project_id_or_slug}": { sdk: "projects.get" },

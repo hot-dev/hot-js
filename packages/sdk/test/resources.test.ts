@@ -214,3 +214,110 @@ describe("HotClient resource coverage", () => {
     await expect(hot.blobs.download("missing")).rejects.toMatchObject({ status: 404 });
   });
 });
+
+describe("server status", () => {
+  const body = {
+    status: "ok",
+    service: "hot.dev api server",
+    version: "3.0.4",
+    git_sha: "133edc3",
+    start_time: "2026-11-06T10:00:00Z",
+  };
+
+  it("reads GET /status from the server's root, not under /v1", async () => {
+    const urls: string[] = [];
+    const hot = new HotClient({
+      baseUrl: "http://hot.test/",
+      token: "hot_key",
+      fetch: async (input) => {
+        urls.push(String(input));
+        return Response.json(body);
+      },
+    });
+
+    await expect(hot.status()).resolves.toEqual(body);
+    expect(urls).toEqual(["http://hot.test/status"]);
+  });
+
+  it("retries a brief outage, as other JSON calls do", async () => {
+    let calls = 0;
+    const hot = new HotClient({
+      baseUrl: "http://hot.test",
+      token: "hot_key",
+      fetch: async () => {
+        calls += 1;
+        return calls === 1
+          ? new Response("busy", { status: 503, headers: { "Retry-After": "0" } })
+          : Response.json(body);
+      },
+    });
+
+    await expect(hot.status()).resolves.toEqual(body);
+    expect(calls).toBe(2);
+  });
+
+  it("throws HotApiError when the server answers with an error", async () => {
+    const hot = new HotClient({
+      baseUrl: "http://hot.test",
+      token: "hot_key",
+      fetch: async () => new Response("no", { status: 404 }),
+    });
+
+    await expect(hot.status()).rejects.toMatchObject({ status: 404 });
+  });
+
+  it("stops when the caller aborts", async () => {
+    const hot = new HotClient({
+      baseUrl: "http://hot.test",
+      token: "hot_key",
+      fetch: async (_input, init) => {
+        init?.signal?.throwIfAborted();
+        return Response.json(body);
+      },
+    });
+    const controller = new AbortController();
+    controller.abort(new Error("stopped"));
+
+    await expect(hot.status({ signal: controller.signal })).rejects.toThrow("stopped");
+  });
+});
+
+describe("run filters", () => {
+  it("sends project, stream and function as query parameters", async () => {
+    const urls: string[] = [];
+    const hot = new HotClient({
+      baseUrl: "http://hot.test",
+      token: "hot_key",
+      fetch: async (input) => {
+        urls.push(String(input));
+        return Response.json({ data: [], pagination: { total: 0 }, meta: {} });
+      },
+    });
+
+    await hot.runs.list({ project_id: "p-1", stream_id: "s-1", function: "::orders/on-placed" });
+
+    const query = new URL(urls[0]!).searchParams;
+    expect(query.get("project_id")).toBe("p-1");
+    expect(query.get("stream_id")).toBe("s-1");
+    expect(query.get("function")).toBe("::orders/on-placed");
+  });
+});
+
+describe("event ids", () => {
+  it("sends a caller's event_id, so a publish is safe to send again", async () => {
+    const bodies: unknown[] = [];
+    const hot = new HotClient({
+      baseUrl: "http://hot.test",
+      token: "hot_key",
+      fetch: async (_input, init) => {
+        bodies.push(JSON.parse(String(init?.body)));
+        return Response.json({ data: { event_id: "e-1" }, meta: {} });
+      },
+    });
+
+    await hot.events.publish({ event_id: "e-1", event_type: "order:placed", event_data: {} });
+
+    expect(bodies).toEqual([{ event_id: "e-1", event_type: "order:placed", event_data: {} }]);
+  });
+});
+

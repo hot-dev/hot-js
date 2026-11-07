@@ -25,7 +25,11 @@ export interface RequestOptions {
   headers?: Record<string, string>;
 }
 
-type JsonRequestInit = RequestInit & { query?: Query };
+type JsonRequestInit = RequestInit & {
+  query?: Query;
+  /** Where `path` starts, for a route outside `/v1`. */
+  base?: string;
+};
 
 export class HttpClient {
   readonly baseUrl: string;
@@ -91,8 +95,8 @@ export class HttpClient {
     init?: JsonRequestInit,
   ): Promise<T> {
     const query = init?.query ? this.buildQuery(init.query) : "";
-    const url = `${this.apiBaseUrl}${path}${query}`;
-    const { query: _query, signal: callerSignal, ...rest } = init ?? {};
+    const url = `${init?.base ?? this.apiBaseUrl}${path}${query}`;
+    const { query: _query, base: _base, signal: callerSignal, ...rest } = init ?? {};
 
     for (let attempt = 0; ; attempt++) {
       const deadline = this.timeoutMs > 0 ? new AbortController() : undefined;

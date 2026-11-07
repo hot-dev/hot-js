@@ -149,6 +149,35 @@ describe.skipIf(!fixtureData)("org API integration", () => {
       .toContain(minted.api_key_id);
     await org.apiKeys.revoke(minted.api_key_id);
     await expect(reader.orgs.list()).rejects.toMatchObject({ status: 401 });
+    expect(await org.apiKeys.get(minted.api_key_id)).toMatchObject({ active: false, status: "revoked" });
+  });
+
+  it("says a key stopped because a key that issued it did", { timeout: 60_000 }, async () => {
+    const conf = fixture();
+    const org = client(conf.org_token);
+    const issuer = await org.orgs.createApiKey(conf.root_org_id, {
+      description: "sdk issuer",
+      permissions: {
+        "org:*": ["create", "read", "update"],
+        "org:*/env:*": ["create", "read"],
+        "org:*/env:*/api-key:*": ["create", "read"],
+        "org:*/env:*/*:*": ["*"],
+      },
+    });
+    const delegated = client(issuer.token!);
+    const child = await delegated.orgs.create({ name: "issued", slug: slug(), idempotency_key: randomUUID() });
+    const issued = await delegated.orgs.createEnvApiKey(child.org.org_id, child.env_id, {
+      description: "sdk issued",
+      permissions: { "*:*": ["*"] },
+    });
+    expect(issued).toMatchObject({ active: true, status: "active" });
+
+    await org.apiKeys.revoke(issuer.api_key_id);
+
+    expect(await org.apiKeys.get(issued.api_key_id)).toMatchObject({
+      active: false,
+      status: "issuer_inactive",
+    });
   });
 
   it("applies issuer revocation and narrowed grants to existing descendants", async () => {
