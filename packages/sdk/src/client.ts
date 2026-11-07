@@ -14,7 +14,7 @@ import { ServiceKeysResource } from "./resources/service-keys.js";
 import { SessionsResource } from "./resources/sessions.js";
 import { StreamsResource } from "./resources/streams.js";
 import { TasksResource } from "./resources/tasks.js";
-import type { HotClientOptions, Query } from "./types.js";
+import type { HotClientOptions, Query, ServerStatus } from "./types.js";
 
 export interface HotRequestInit extends RequestOptions {
   /** JSON-serialized request body. */
@@ -59,6 +59,17 @@ export class HotClient {
     this.sessions = new SessionsResource(this.http);
     this.streams = new StreamsResource(this.http);
     this.tasks = new TasksResource(this.http);
+  }
+
+  /**
+   * Read the server's status from `GET /status`, a public route outside `/v1`
+   * that answers with no envelope. Uses the client's timeout and retry rules.
+   */
+  async status(options?: { signal?: AbortSignal }): Promise<ServerStatus> {
+    return this.http.requestJsonEnvelope<ServerStatus>("GET", "/status", {
+      base: this.http.baseUrl,
+      signal: options?.signal,
+    });
   }
 
   /**
