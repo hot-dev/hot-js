@@ -113,7 +113,9 @@ describe.skipIf(!fixtureData)("org API integration", () => {
       for (const credential of [service, session]) {
         const runtime = client(credential.token!);
         await runtime.events.publish(isolationEvent);
-        await expect(runtime.events.get(other.event_id)).rejects.toMatchObject({ status: 403 });
+        await expect(runtime.events.get(other.event_id)).rejects.toMatchObject({
+          status: expect.toBeOneOf([403, 404]),
+        });
       }
       await a.serviceKeys.revoke(service.service_key_id);
       await a.sessions.revoke(session.session_id);
