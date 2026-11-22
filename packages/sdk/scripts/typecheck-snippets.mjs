@@ -42,7 +42,6 @@ writeFileSync(join(out, "tsconfig.json"), JSON.stringify({
     noEmit: true,
     noUnusedLocals: false,
     types: ["node"],
-    baseUrl: ".",
     paths: {
       "@hot-dev/sdk": ["../src/index.ts"],
       "@hot-dev/sdk/*": ["../src/*/index.ts"],
