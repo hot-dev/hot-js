@@ -15,6 +15,7 @@ import type {
   Query,
   ResponseMeta,
 } from "./types.js";
+import { stripTrailingSlashes } from "./path.js";
 import { VERSION } from "./version.js";
 
 const DEFAULT_BASE_URL = "https://api.hot.dev";
@@ -79,9 +80,10 @@ export class HttpClient {
   #token: string;
 
   constructor(options: HotClientOptions) {
-    this.baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL)
-      .replace(/\/+$/, "")
-      .replace(/\/v1$/, "");
+    const trimmed = stripTrailingSlashes(options.baseUrl ?? DEFAULT_BASE_URL);
+    this.baseUrl = trimmed.endsWith("/v1")
+      ? stripTrailingSlashes(trimmed.slice(0, -3))
+      : trimmed;
     this.apiBaseUrl = `${this.baseUrl}/v1`;
     this.#token = options.token;
     this.fetchFn = options.fetch ?? globalThis.fetch.bind(globalThis);

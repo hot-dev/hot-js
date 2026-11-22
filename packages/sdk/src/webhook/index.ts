@@ -1,5 +1,5 @@
 import { USER_AGENT, type HttpClient } from "../http.js";
-import { enc, encPath } from "../path.js";
+import { enc, encPath, stripTrailingSlashes } from "../path.js";
 import { parseApiError } from "../errors.js";
 import { mergeAbortSignals, normalizeTimeoutMs, timeoutError } from "../retry.js";
 import type { WebhookMessage, WebhookResponse } from "../types.js";
@@ -22,7 +22,7 @@ export interface WebhookTarget {
 
 /** Build a Hot webhook URL for a service endpoint. */
 export function buildWebhookUrl(baseUrl: string, target: WebhookTarget): string {
-  const root = baseUrl.replace(/\/+$/, "");
+  const root = stripTrailingSlashes(baseUrl);
   const path = encPath(target.path ?? "web/messages");
   const suffix = target.token ? `/${enc(target.token)}` : "";
   const service = enc(target.service);
