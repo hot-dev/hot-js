@@ -1,6 +1,6 @@
 export { HotClient, type HotRequestInit } from "./client.js";
 export { HotApiError, HotKeyScopeError, isHotApiError, type KeyScope } from "./errors.js";
-export type { HttpClient, RequestOptions } from "./http.js";
+export { HttpClient, type RequestOptions } from "./http.js";
 export { BlobsResource } from "./resources/blobs.js";
 export { BuildsResource, type UploadBuildOptions } from "./resources/builds.js";
 export { ContextResource } from "./resources/context.js";
@@ -20,4 +20,5 @@ export {
   type SubscribeReconnectOptions,
   type SubscribeWithEventOptions,
 } from "./resources/streams.js";
+export type { TaskUpdateEvent } from "./streaming/types.js";
 export type * from "./types.js";

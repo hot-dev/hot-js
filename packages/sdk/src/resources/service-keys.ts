@@ -1,4 +1,5 @@
 import type { HttpClient } from "../http.js";
+import { enc } from "../path.js";
 import type {
   CreateServiceKeyRequest,
   ListQuery,
@@ -6,8 +7,6 @@ import type {
   ServiceKeyRecord,
   UpdateServiceKeyRequest,
 } from "../types.js";
-
-const enc = encodeURIComponent;
 
 export class ServiceKeysResource {
   constructor(private readonly http: HttpClient) {}

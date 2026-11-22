@@ -1,6 +1,7 @@
 import type { HttpClient } from "../http.js";
+import { enc } from "../path.js";
 import { StreamsResource } from "../resources/streams.js";
-import { mergeAbortSignals, timeoutError } from "../retry.js";
+import { mergeAbortSignals, normalizeTimeoutMs, timeoutError } from "../retry.js";
 import type { RunRecord } from "../types.js";
 import {
   DEFAULT_MAX_RECONNECT_ATTEMPTS,
@@ -16,6 +17,7 @@ import { eventIdFromRun, isRunTerminalEvent, runIdFromEvent } from "./types.js";
 export { mergeAbortSignals } from "../retry.js";
 
 export interface WaitForRunOptions {
+  /** Total wait timeout in milliseconds (`0` disables it). Default `60000`. */
   timeoutMs?: number;
   /** Consecutive failed connections tolerated. Default 5; rollovers reset it. */
   maxReconnectAttempts?: number;
@@ -23,7 +25,15 @@ export interface WaitForRunOptions {
   onChunk?: (text: string) => void;
 }
 
-class RunTerminalError extends Error {}
+export class HotRunError extends Error {
+  readonly run: RunRecord;
+
+  constructor(run: RunRecord, fallback = "Run failed") {
+    super(runResultMessage(run, fallback));
+    this.name = "HotRunError";
+    this.run = run;
+  }
+}
 
 /**
  * Subscribe to a stream and wait for the run associated with `eventId`.
@@ -37,6 +47,7 @@ export async function waitForRunResult(
   eventId: string,
   options?: WaitForRunOptions,
 ): Promise<RunRecord> {
+  enc(streamId);
   const streams = new StreamsResource(http);
   return waitForCorrelatedRun(
     (signal, reconnector, correlator) => followStream({
@@ -64,20 +75,25 @@ export async function waitForCorrelatedRun(
   timeoutMessage: string,
   options?: WaitForRunOptions,
 ): Promise<RunRecord> {
-  const timeoutMs = options?.timeoutMs ?? 60_000;
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(timeoutError(timeoutMessage)), timeoutMs);
-  const signal = mergeAbortSignals([options?.signal, controller.signal]);
+  const effectiveTimeoutMs = normalizeTimeoutMs(options?.timeoutMs ?? 60_000);
+  const controller = effectiveTimeoutMs !== undefined ? new AbortController() : undefined;
+  const timeout = controller
+    ? setTimeout(() => controller.abort(timeoutError(timeoutMessage)), effectiveTimeoutMs)
+    : undefined;
+  const signal = mergeAbortSignals([options?.signal, controller?.signal]);
   const reconnector = new Reconnector({
     maxAttempts: options?.maxReconnectAttempts ?? DEFAULT_MAX_RECONNECT_ATTEMPTS,
     signal,
-    deadline: Date.now() + timeoutMs,
+    deadline: effectiveTimeoutMs !== undefined ? Date.now() + effectiveTimeoutMs : undefined,
     timeoutMessage,
     exhaustedMessage: "Stream ended before run completed",
   });
   const deliver = (chunks: StreamDataEvent[]) => {
     for (const chunk of chunks) {
-      const text = chunk.payload?.text;
+      const payload = chunk.payload;
+      const text = payload && typeof payload === "object"
+        ? (payload as Record<string, unknown>).text
+        : undefined;
       if (typeof text === "string") options?.onChunk?.(text);
     }
   };
@@ -89,7 +105,7 @@ export async function waitForCorrelatedRun(
     }
   } catch (error) {
     // At the deadline, a failure that was waiting for its retry stands.
-    if (controller.signal.aborted && !options?.signal?.aborted && correlator.expire()) {
+    if (controller?.signal.aborted && !options?.signal?.aborted && correlator.expire()) {
       return settle(correlator.outcome!);
     }
     throw signal.aborted ? signal.reason ?? error : error;
@@ -102,8 +118,8 @@ export async function waitForCorrelatedRun(
 
 function settle(outcome: RunOutcomeEvent): RunRecord {
   const run = outcome.run!;
-  if (outcome.type === "run:fail") throw new RunTerminalError(runResultMessage(run, "Run failed"));
-  if (outcome.type === "run:cancel") throw new RunTerminalError(runResultMessage(run, "Run cancelled"));
+  if (outcome.type === "run:fail") throw new HotRunError(run, "Run failed");
+  if (outcome.type === "run:cancel") throw new HotRunError(run, "Run cancelled");
   return run;
 }
 

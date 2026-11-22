@@ -1,12 +1,11 @@
 import type { HttpClient } from "../http.js";
+import { enc } from "../path.js";
 import type {
   CreateSessionRequest,
   ListQuery,
   RevokeAllResponse,
   SessionRecord,
 } from "../types.js";
-
-const enc = encodeURIComponent;
 
 export class SessionsResource {
   constructor(private readonly http: HttpClient) {}

@@ -1,13 +1,13 @@
 import type { HttpClient } from "../http.js";
+import { enc } from "../path.js";
 import { STREAM_IDLE_TIMEOUT_MS, waitForSnapshot } from "../streaming/durable.js";
 import { consumeSseResponse } from "../streaming/sse.js";
 import type { TaskUpdateEvent } from "../streaming/types.js";
 import { resultMessage } from "../streaming/wait.js";
 import type { TaskRecord } from "../types.js";
 
-const enc = encodeURIComponent;
-
 export interface WaitForTaskOptions {
+  /** Total wait timeout in milliseconds (`0` disables it). Default `60000`. */
   timeoutMs?: number;
   /** Consecutive failed connections tolerated. Default 5. */
   maxReconnectAttempts?: number;
@@ -28,7 +28,7 @@ export class TasksResource {
   constructor(private readonly http: HttpClient) {}
 
   async get(taskId: string, options?: { signal?: AbortSignal }): Promise<TaskRecord> {
-    const envelope = await this.http.requestJson<TaskRecord>("GET", `/tasks/${taskId}`, {
+    const envelope = await this.http.requestJson<TaskRecord>("GET", `/tasks/${enc(taskId)}`, {
       signal: options?.signal,
     });
     return envelope.data;
@@ -48,8 +48,9 @@ export class TasksResource {
   }
 
   private subscribeOnce(taskId: string, signal?: AbortSignal, idleTimeoutMs?: number) {
+    const path = `/tasks/${enc(taskId)}/subscribe`;
     return consumeSseResponse(async () => {
-      return this.http.requestRaw("GET", `/tasks/${enc(taskId)}/subscribe`, {
+      return this.http.requestRaw("GET", path, {
         headers: { Accept: "text/event-stream" },
         signal,
       });
@@ -62,6 +63,7 @@ export class TasksResource {
    * Reconnects with backoff on transient errors; stops on permanent ones.
    */
   async wait(taskId: string, options?: WaitForTaskOptions): Promise<TaskRecord> {
+    enc(taskId);
     return waitForSnapshot<TaskRecord>({
       open: (signal) => this.subscribeOnce(taskId, signal, STREAM_IDLE_TIMEOUT_MS),
       snapshot: (event) => (event.type === "task:update" ? event.task : undefined),

@@ -20,6 +20,8 @@ export interface RunStopEvent {
 export interface RunFailEvent {
   type: "run:fail";
   run?: RunRecord;
+  /** Retry run scheduled for this failure, when known (Hot 3.0.14+). */
+  retry_run_id?: string;
 }
 
 export interface RunCancelEvent {
@@ -37,7 +39,7 @@ export interface StreamDataEvent {
   run_id?: string;
   stream_data_id?: string;
   data_type: string;
-  payload?: Record<string, unknown>;
+  payload?: unknown;
 }
 
 export interface StreamCompleteEvent {

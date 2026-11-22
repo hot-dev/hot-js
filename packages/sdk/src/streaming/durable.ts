@@ -1,7 +1,14 @@
 // Shared machinery for the durable stream helpers: one reconnect policy, run
 // correlation for a published event, and stream:data buffering.
 import { isHotApiError, isPermanentError } from "../errors.js";
-import { backoffDelayMs, mergeAbortSignals, sleep, timeoutError } from "../retry.js";
+import {
+  backoffDelayMs,
+  clampTimeoutMs,
+  mergeAbortSignals,
+  normalizeTimeoutMs,
+  sleep,
+  timeoutError,
+} from "../retry.js";
 import type { RunRecord } from "../types.js";
 import type {
   RunCancelEvent,
@@ -17,6 +24,17 @@ export const DEFAULT_MAX_RECONNECT_ATTEMPTS = 5;
 /** Three missed 15 s keepalives: the connection is dead. */
 export const STREAM_IDLE_TIMEOUT_MS = 45_000;
 const MAX_BUFFERED_CHUNKS = 1_000;
+const MAX_ORPHAN_EVENTS = 1_000;
+const MAX_SEEN_RUN_IDS = 10_000;
+
+function addCapped(set: Set<string>, value: string, max: number): void {
+  if (set.has(value)) return;
+  if (set.size >= max) {
+    const oldest = set.values().next().value;
+    if (oldest !== undefined) set.delete(oldest);
+  }
+  set.add(value);
+}
 
 export interface ReconnectorOptions {
   /** Consecutive failed connections allowed before giving up. */
@@ -71,6 +89,8 @@ type RunLifecycleEvent = RunStartEvent | RunStopEvent | RunFailEvent | RunCancel
 export type RunOutcomeEvent = RunStopEvent | RunFailEvent | RunCancelEvent;
 
 interface TiedRun {
+  /** This run's own attempt number (0 for first attempt, >= origin + 1 for retries). */
+  initialAttempt: number;
   /** Highest `retry_attempt` seen for the run. */
   attempt: number;
   runType: string | undefined;
@@ -78,19 +98,20 @@ interface TiedRun {
 
 /**
  * Ties runs on a stream to one published event and decides when its work is
- * done. A run belongs to the event when its `event_id` matches, or when it is
- * a retry of a tied run: its `origin_run_id` names a tied run of the same
- * `run_type` (a retry gets a new event ID; task runs also name their starting
- * run as origin, but have type `task`).
+ * done. A run belongs to the event when its `event_id` matches, when it was
+ * named by a tied run's `run:fail.retry_run_id`, or when it is a retry of a
+ * tied run: its `origin_run_id` names a tied run of the same `run_type` (a
+ * retry gets a new event ID; task runs also name their starting run as origin,
+ * but have type `task`).
  *
  * The server replays a retried first attempt lossily: as `run:fail` or
  * `run:stop` with status `pending_retry`, or, once the retry is queued and
  * before the retry run exists, as `run:fail` with status `failed`. So:
  * `pending_retry` is never final; a tied run that a tied retry names as its
- * origin is "retried" and its later `run:fail` is not final; and a `run:fail`
- * whose `retry_attempt` is above its own attempt number (its origin's
- * `retry_attempt`, or 0) is held for `RETRY_GRACE_MS` and stands only if no
- * retry of it appears by then (or by the caller's deadline).
+ * origin (or that reported `retry_run_id`) is "retried" and its later
+ * `run:fail` is not final; and a `run:fail` whose `retry_attempt` is above its
+ * own attempt number is held for `RETRY_GRACE_MS` and stands only if no retry
+ * of it appears by then (or by the caller's deadline).
  *
  * Buffers `stream:data` for runs not yet tied, because the server may send
  * chunks and even `run:stop` before `run:start`.
@@ -103,6 +124,7 @@ export class RunCorrelator {
   private readonly retried = new Set<string>();
   /** Run events whose origin run is not tied yet, by `origin_run_id`. */
   private readonly orphans = new Map<string, RunLifecycleEvent[]>();
+  private orphanCount = 0;
   private held: { runId: string; until: number; event: RunFailEvent } | undefined;
   private readonly buffered = new Map<string, StreamDataEvent[]>();
   private bufferedCount = 0;
@@ -152,7 +174,7 @@ export class RunCorrelator {
     }
     queue.push(event);
     this.bufferedCount += 1;
-    if (this.bufferedCount > MAX_BUFFERED_CHUNKS) this.dropOldest();
+    if (this.bufferedCount > MAX_BUFFERED_CHUNKS) this.dropOldestChunk();
     return [];
   }
 
@@ -173,7 +195,27 @@ export class RunCorrelator {
     return queue;
   }
 
+  private addOrphan(originRunId: string, event: RunLifecycleEvent): void {
+    let queue = this.orphans.get(originRunId);
+    if (!queue) {
+      queue = [];
+      this.orphans.set(originRunId, queue);
+    }
+    queue.push(event);
+    this.orphanCount += 1;
+    if (this.orphanCount > MAX_ORPHAN_EVENTS) this.dropOldestOrphan();
+  }
+
+  private takeOrphans(originRunId: string, runType: string | undefined): RunLifecycleEvent[] {
+    const queue = this.orphans.get(originRunId);
+    if (!queue) return [];
+    this.orphans.delete(originRunId);
+    this.orphanCount -= queue.length;
+    return queue.filter((orphan) => orphan.run?.run_type === runType);
+  }
+
   private ties(run: RunRecord): boolean {
+    if (this.runs.has(run.run_id)) return true;
     if (this.eventId !== undefined && run.event_id === this.eventId) return true;
     const origin = run.origin_run_id ? this.runs.get(run.origin_run_id) : undefined;
     return origin !== undefined && origin.runType === run.run_type;
@@ -183,28 +225,84 @@ export class RunCorrelator {
     const run = event.run!;
     if (!this.ties(run)) {
       if (run.origin_run_id) {
-        const queue = this.orphans.get(run.origin_run_id) ?? [];
-        queue.push(event);
-        this.orphans.set(run.origin_run_id, queue);
+        this.addOrphan(run.origin_run_id, event);
       }
       return false;
     }
+
     const attempt = run.retry_attempt ?? 0;
+    const origin = run.origin_run_id ? this.runs.get(run.origin_run_id) : undefined;
     let orphans: RunLifecycleEvent[] = [];
     const tied = this.runs.get(run.run_id);
     if (tied) {
       tied.attempt = Math.max(tied.attempt, attempt);
+      if (event.type === "run:start" && attempt > tied.initialAttempt) {
+        tied.initialAttempt = attempt;
+      }
+      if (tied.runType === undefined && run.run_type !== undefined) {
+        tied.runType = run.run_type;
+      }
     } else {
-      this.runs.set(run.run_id, { attempt, runType: run.run_type });
-      orphans = (this.orphans.get(run.run_id) ?? []).filter((orphan) => orphan.run?.run_type === run.run_type);
-      this.orphans.delete(run.run_id);
+      const initialAttempt = event.type === "run:start"
+        ? attempt
+        : origin
+          ? Math.max(origin.attempt, origin.initialAttempt + 1)
+          : 0;
+      this.runs.set(run.run_id, {
+        initialAttempt,
+        attempt: Math.max(initialAttempt, attempt),
+        runType: run.run_type,
+      });
+      orphans = this.takeOrphans(run.run_id, run.run_type);
       // A retry of this run is already on the stream.
       if (orphans.length > 0) this.retried.add(run.run_id);
     }
+
     if (run.origin_run_id) {
       this.retried.add(run.origin_run_id);
       if (this.held?.runId === run.origin_run_id) this.held = undefined;
     }
+
+    // Hot 3.0.14+ carries top-level `retry_run_id` on `run:fail` when a retry
+    // has been scheduled: correlate the retry run immediately.
+    if (event.type === "run:fail" && typeof event.retry_run_id === "string" && event.retry_run_id) {
+      const retryRunId = event.retry_run_id;
+      this.retried.add(run.run_id);
+      if (this.held?.runId === run.run_id) this.held = undefined;
+      const currentTied = this.runs.get(run.run_id)!;
+      const nextAttempt = Math.max(attempt, currentTied.initialAttempt + 1);
+      if (!this.runs.has(retryRunId)) {
+        this.runs.set(retryRunId, {
+          initialAttempt: nextAttempt,
+          attempt: nextAttempt,
+          runType: run.run_type,
+        });
+        const retryOrphans = this.takeOrphans(retryRunId, run.run_type);
+        if (retryOrphans.length > 0) {
+          this.retried.add(retryRunId);
+          orphans.push(...retryOrphans);
+        }
+      }
+    }
+
+    // If an already-held child retry failure's origin just reported its updated
+    // retry_attempt, check whether the child is actually final now.
+    if (this.held && this.held.event.run?.origin_run_id === run.run_id) {
+      const heldRun = this.held.event.run;
+      const heldTied = this.runs.get(this.held.runId);
+      const originTied = this.runs.get(run.run_id)!;
+      const newBase = Math.max(
+        heldTied?.initialAttempt ?? 0,
+        originTied.attempt,
+        originTied.initialAttempt + 1,
+      );
+      if ((heldRun.retry_attempt ?? 0) <= newBase) {
+        this.outcome = this.held.event;
+        this.held = undefined;
+        return true;
+      }
+    }
+
     if (this.decide(event)) return true;
     for (const orphan of orphans) {
       if (this.runEvent(orphan)) return true;
@@ -224,8 +322,13 @@ export class RunCorrelator {
       case "run:fail": {
         if (this.retried.has(run.run_id)) return false;
         // retry_attempt goes up when a retry is scheduled; a run's own attempt
-        // number is its origin's retry_attempt (0 for a first attempt).
-        const base = run.origin_run_id ? this.runs.get(run.origin_run_id)?.attempt ?? 0 : 0;
+        // number is at least its initialAttempt and origin's attempt / initial+1.
+        const tied = this.runs.get(run.run_id);
+        const origin = run.origin_run_id ? this.runs.get(run.origin_run_id) : undefined;
+        const base = Math.max(
+          tied?.initialAttempt ?? 0,
+          origin ? Math.max(origin.attempt, origin.initialAttempt + 1) : 0,
+        );
         if ((run.retry_attempt ?? 0) > base) {
           this.held ??= { runId: run.run_id, until: Date.now() + RETRY_GRACE_MS, event };
           return false;
@@ -238,11 +341,22 @@ export class RunCorrelator {
     }
   }
 
-  private dropOldest(): void {
-    const [runId, queue] = this.buffered.entries().next().value as [string, StreamDataEvent[]];
+  private dropOldestChunk(): void {
+    const entry = this.buffered.entries().next().value as [string, StreamDataEvent[]] | undefined;
+    if (!entry) return;
+    const [runId, queue] = entry;
     queue.shift();
     this.bufferedCount -= 1;
     if (queue.length === 0) this.buffered.delete(runId);
+  }
+
+  private dropOldestOrphan(): void {
+    const entry = this.orphans.entries().next().value as [string, RunLifecycleEvent[]] | undefined;
+    if (!entry) return;
+    const [originRunId, queue] = entry;
+    queue.shift();
+    this.orphanCount -= 1;
+    if (queue.length === 0) this.orphans.delete(originRunId);
   }
 }
 
@@ -277,6 +391,7 @@ export async function* followStream(
   const { correlator, reconnector } = options;
   const seenStart = new Set<string>();
   const seenTerminal = new Set<string>();
+  const seenPendingRetry = new Set<string>();
   let streamId = options.streamId;
 
   while (true) {
@@ -303,11 +418,18 @@ export async function* followStream(
         } else if (event.type === "run:start") {
           const runId = event.run?.run_id;
           if (runId && seenStart.has(runId)) continue;
-          if (runId) seenStart.add(runId);
+          if (runId) addCapped(seenStart, runId, MAX_SEEN_RUN_IDS);
         } else if (isRunTerminalEvent(event)) {
           const runId = event.run?.run_id;
-          if (runId && seenTerminal.has(runId)) continue;
-          if (runId) seenTerminal.add(runId);
+          if (event.run?.status === "pending_retry") {
+            // Do NOT insert into seenTerminal so a subsequent final
+            // `failed`/`cancelled` event for the same run_id is not dropped.
+            if (runId && seenPendingRetry.has(runId)) continue;
+            if (runId) addCapped(seenPendingRetry, runId, MAX_SEEN_RUN_IDS);
+          } else {
+            if (runId && seenTerminal.has(runId)) continue;
+            if (runId) addCapped(seenTerminal, runId, MAX_SEEN_RUN_IDS);
+          }
         }
         // Any new event is progress, including the server's 300 s
         // `stream:complete` rollover.
@@ -319,10 +441,11 @@ export async function* followStream(
     } catch (error) {
       failure = error;
     } finally {
-      // Close the connection on every exit, including a consumer leaving early.
-      if (pending) pending.catch(() => {});
-      else void iter.return(undefined).catch(() => {});
+      // Abort first so any pending read unblocks immediately (including on WOKE
+      // expiry), then close the iterator and swallow any rejection from pending.
       connection.abort();
+      if (pending) pending.catch(() => {});
+      void iter.return(undefined).catch(() => {});
     }
 
     if (!streamId) {
@@ -340,7 +463,7 @@ async function nextOrWake<T>(pending: Promise<T>, wakeAt: number | undefined): P
   if (wakeAt === undefined) return pending;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const wake = new Promise<typeof WOKE>((resolve) => {
-    timer = setTimeout(() => resolve(WOKE), Math.max(0, wakeAt - Date.now()));
+    timer = setTimeout(() => resolve(WOKE), clampTimeoutMs(wakeAt - Date.now()));
   });
   try {
     return await Promise.race([pending, wake]);
@@ -369,16 +492,19 @@ export interface WaitForSnapshotOptions<T> {
  * only when it delivers a snapshot that differs from the last one seen.
  */
 export async function waitForSnapshot<T>(options: WaitForSnapshotOptions<T>): Promise<T> {
-  const controller = new AbortController();
-  const timeout = setTimeout(
-    () => controller.abort(timeoutError(options.timeoutMessage)),
-    options.timeoutMs,
-  );
-  const signal = mergeAbortSignals([options.signal, controller.signal]);
+  const effectiveTimeoutMs = normalizeTimeoutMs(options.timeoutMs);
+  const controller = effectiveTimeoutMs !== undefined ? new AbortController() : undefined;
+  const timeout = controller
+    ? setTimeout(
+      () => controller.abort(timeoutError(options.timeoutMessage)),
+      effectiveTimeoutMs,
+    )
+    : undefined;
+  const signal = mergeAbortSignals([options.signal, controller?.signal]);
   const reconnector = new Reconnector({
     maxAttempts: options.maxReconnectAttempts,
     signal,
-    deadline: Date.now() + options.timeoutMs,
+    deadline: effectiveTimeoutMs !== undefined ? Date.now() + effectiveTimeoutMs : undefined,
     timeoutMessage: options.timeoutMessage,
     exhaustedMessage: options.exhaustedMessage,
   });

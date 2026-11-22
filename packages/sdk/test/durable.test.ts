@@ -4,7 +4,7 @@
 import { describe, expect, it } from "vitest";
 import { HotClient } from "../src/client.js";
 import { HotApiError } from "../src/errors.js";
-import { waitForRunResult } from "../src/streaming/wait.js";
+import { HotRunError, waitForRunResult } from "../src/streaming/wait.js";
 import type { StreamEvent } from "../src/streaming/types.js";
 
 type Step =
@@ -314,5 +314,96 @@ describe("lossy replays of a retried attempt", () => {
     const started = Date.now();
     await expect(hot.events.callHot("::app/fn")).rejects.toThrow("boom");
     expect(Date.now() - started).toBeLessThan(1_000);
+  });
+
+  it("correlates retry_run_id on run:fail immediately and delivers early retry chunks", async () => {
+    const failWithRetryId =
+      `{"type":"run:fail","run":${run({ run_id: "rA", event_id: "e1", status: "failed", retry_attempt: 1, result: "first" })},"retry_run_id":"rB"}`;
+    // Retry run has no origin_run_id and a new event_id, relying on retry_run_id correlation.
+    const retryOnlyById =
+      `{"type":"run:stop","run":${run({ run_id: "rB", event_id: "e9", status: "succeeded", retry_attempt: 1, result: "via-retry-id" })}}`;
+    const { hot } = scripted([{
+      sse: [published, chunk("rB", "early-retry"), failWithRetryId, retryOnlyById],
+    }]);
+    const chunks: string[] = [];
+    await expect(hot.events.callHot("::app/flaky", [], { onChunk: (t) => chunks.push(t) }))
+      .resolves.toBe("via-retry-id");
+    expect(chunks).toEqual(["early-retry"]);
+  });
+
+  it("does not drop a later final failed/cancelled event for the same run_id after pending_retry", async () => {
+    const pendingFail =
+      `{"type":"run:fail","run":${run({ run_id: "rA", event_id: "e1", status: "pending_retry", retry_attempt: 1, result: "retrying" })}}`;
+    const finalCancel =
+      `{"type":"run:cancel","run":${run({ run_id: "rA", event_id: "e1", status: "cancelled", retry_attempt: 1, result: "user cancelled" })}}`;
+    const { hot } = scripted([
+      { sse: [published, pendingFail] },
+      { sse: [pendingFail, finalCancel] },
+    ]);
+
+    const events = await collect(hot.streams.subscribeWithEvent({ event_type: "x", event_data: {} }));
+    expect(events.map((e) => e.type)).toEqual(["event:published", "run:fail", "run:cancel"]);
+    const last = events.at(-1);
+    expect(last?.type === "run:cancel" && last.run?.status).toBe("cancelled");
+  });
+
+  it("does not stall 5s when a retry run's final run:fail arrives before its origin's run:fail", async () => {
+    const originStart = `{"type":"run:start","run":${run({ run_id: "rA", event_id: "e1", status: "running", retry_attempt: 0 })}}`;
+    const retryFinalFail = `{"type":"run:fail","run":${run({ run_id: "rB", event_id: "e9", origin_run_id: "rA", status: "failed", retry_attempt: 1, result: "exhausted" })}}`;
+    const { hot } = scripted([{ sse: [published, originStart, retryFinalFail], keepOpen: true }]);
+    const started = Date.now();
+    const err = await hot.events.callHot("::app/flaky").catch((e: unknown) => e);
+    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(err).toBeInstanceOf(HotRunError);
+    expect((err as HotRunError).message).toBe("exhausted");
+    expect((err as HotRunError).run.run_id).toBe("rB");
+  });
+
+  it("throws HotRunError with .run attached from callHot and waitForRunResult", async () => {
+    const cancel = `{"type":"run:cancel","run":${run({ run_id: "r1", event_id: "e1", status: "cancelled", retry_attempt: 0, result: "aborted" })}}`;
+    const { hot } = scripted([{ sse: [published, cancel] }]);
+    const err = await hot.events.callHot("::app/fn").catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(HotRunError);
+    expect((err as HotRunError).run.run_id).toBe("r1");
+    expect((err as HotRunError).message).toBe("aborted");
+  });
+
+  it("cancels the underlying stream immediately when a held failure expires via WOKE", async () => {
+    let streamCancelled = false;
+    const encoder = new TextEncoder();
+    const hot = new HotClient({
+      baseUrl: "http://hot.test",
+      token: "t",
+      fetch: async () => new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode(`data: ${published}\n\n`));
+          controller.enqueue(encoder.encode(`data: ${firstAttempt("run:fail", "failed")}\n\n`));
+        },
+        cancel() {
+          streamCancelled = true;
+        },
+      }), { headers: { "Content-Type": "text/event-stream" } }),
+    });
+
+    const events = await collect(hot.streams.subscribeWithEvent({ event_type: "x", event_data: {} }));
+    expect(events.map((e) => e.type)).toEqual(["event:published", "run:fail"]);
+    // Give cancel microtask a tick
+    await new Promise((r) => setTimeout(r, 20));
+    expect(streamCancelled).toBe(true);
+  }, 10_000);
+
+  it("handles primitive stream:data payloads and timeoutMs 0 / oversized clamping", async () => {
+    const primitiveChunk = '{"type":"stream:data","run_id":"r1","data_type":"ai:delta","payload":"plain-string"}';
+    const { hot } = scripted([{ sse: [published, start("r1"), primitiveChunk, chunk("r1", "ok"), stop("r1", "done")] }]);
+    const chunks: string[] = [];
+    await expect(hot.events.callHot("::app/fn", [], {
+      timeoutMs: 0,
+      onChunk: (text) => chunks.push(text),
+    })).resolves.toBe("done");
+    expect(chunks).toEqual(["ok"]);
+
+    const clamped = scripted([{ sse: [runUpdate("succeeded")] }]);
+    await expect(clamped.hot.runs.wait("r1", { timeoutMs: 3_000_000_000 }))
+      .resolves.toMatchObject({ status: "succeeded" });
   });
 });

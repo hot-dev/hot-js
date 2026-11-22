@@ -205,7 +205,7 @@ describe("createHotProxyRoute", () => {
     expect(await response.json()).toEqual({ error: "no access" });
   });
 
-  it("passes SSE responses through", async () => {
+  it("passes SSE responses through without HTTP/2-forbidden Connection header", async () => {
     const { hot } = upstream();
 
     const response = await createHotProxyRoute(hot, chat)(jsonRequest({
@@ -215,6 +215,102 @@ describe("createHotProxyRoute", () => {
 
     expect(response.status).toBe(200);
     expect(response.headers.get("Content-Type")).toContain("text/event-stream");
+    expect(response.headers.get("Connection")).toBeNull();
     expect(await response.text()).toContain("stream:complete");
+  });
+
+  it("sanitizes network errors and clamps invalid upstream status codes", async () => {
+    const netFailHot = new HotClient({
+      baseUrl: "http://hot.test",
+      token: "test-token",
+      fetch: async () => {
+        throw new TypeError("connect ECONNREFUSED 10.0.1.42:4681");
+      },
+    });
+    const netRes = await createHotProxyRoute(netFailHot, chat)(jsonRequest({
+      event_type: "team-agent:ask",
+      event_data: {},
+    }));
+    expect(netRes.status).toBe(502);
+    const netBody = await netRes.json() as { error: string };
+    expect(netBody.error).toBe("Failed to reach Hot runtime");
+    expect(netBody.error).not.toContain("10.0.1.42");
+
+    const redirectHot = new HotClient({
+      baseUrl: "http://hot.test",
+      token: "test-token",
+      fetch: async () => new Response("moved", { status: 302, headers: { Location: "http://internal" } }),
+    });
+    const redirectRes = await createHotProxyRoute(redirectHot, chat)(jsonRequest({
+      event_type: "team-agent:ask",
+      event_data: {},
+    }));
+    expect(redirectRes.status).toBe(502);
+    expect(await redirectRes.json()).toEqual({ error: "Upstream Hot API error" });
+
+    const serverErrHot = new HotClient({
+      baseUrl: "http://hot.test",
+      token: "test-token",
+      fetch: async () => new Response("internal panic: db host 10.0.0.9", { status: 500 }),
+    });
+    const serverRes = await createHotProxyRoute(serverErrHot, chat)(jsonRequest({
+      event_type: "team-agent:ask",
+      event_data: {},
+    }));
+    expect(serverRes.status).toBe(500);
+    expect(await serverRes.json()).toEqual({ error: "Upstream Hot API error" });
+  });
+
+  it("handles CRLF, multi-line data:, ignores truncated non-data tail, and enforces buffer cap", async () => {
+    const sse = [
+      '\uFEFFevent: event:published\r\ndata: {"type":"event:published","event_id":"e2","stream_id":"s1"}\r\n\r\n',
+      'data: {\r\ndata:   "type":"run:start",\r\ndata:   "run":{"run_id":"r2","event_id":"e2"}\r\ndata: }\r\n\r\n',
+      'event: run:stop\r\nda', // truncated non-data tail on EOF must NOT be emitted
+    ].join("");
+    const { hot } = upstream(sse);
+    const route = createHotProxyRoute(hot, { ...chat, allowStreamId: true });
+    const text = await (await route(jsonRequest({ event_type: "chat:send", event_data: {}, stream_id: "s1" }))).text();
+    const blocks = text.split("\n\n").filter(Boolean);
+    expect(blocks).toHaveLength(2);
+    expect(blocks[0]).toContain('"event_id":"e2"');
+    expect(blocks[1]).toContain('"run_id":"r2"');
+    expect(text).not.toContain("event: run:stop");
+
+    const huge = upstream("data: " + "x".repeat(128));
+    const cappedRoute = createHotProxyRoute(huge.hot, {
+      ...chat,
+      allowStreamId: true,
+      maxSseBufferBytes: 64,
+    });
+    const res = await cappedRoute(jsonRequest({ event_type: "chat:send", event_data: {}, stream_id: "s1" }));
+    await expect(res.text()).rejects.toThrow(/SSE buffer exceeded/);
+  });
+
+  it("supports multi-handler fan-out, retry_run_id, and early task:update buffering on continued streams", async () => {
+    const sse = [
+      'data: {"type":"event:published","event_id":"e2","stream_id":"s1"}',
+      // Early task:update for handler 1 before handler 1 correlates
+      'data: {"type":"task:update","task":{"task_id":"t1","origin_run_id":"r1","status":"running"}}',
+      // Foreign task:update must be dropped
+      'data: {"type":"task:update","task":{"task_id":"t_other","origin_run_id":"r_foreign","status":"running"}}',
+      // Handler 1 completes
+      'data: {"type":"run:start","run":{"run_id":"r1","event_id":"e2","run_type":"event"}}',
+      'data: {"type":"run:stop","run":{"run_id":"r1","event_id":"e2","run_type":"event","status":"succeeded"}}',
+      // Handler 2 (fan-out for the SAME event_id) fails with retry_run_id -> r2b
+      'data: {"type":"run:fail","run":{"run_id":"r2a","event_id":"e2","run_type":"event","status":"pending_retry"},"retry_run_id":"r2b"}',
+      'data: {"type":"stream:data","run_id":"r2b","data_type":"x","payload":{"text":"from-retry"}}',
+      'data: {"type":"run:stop","run":{"run_id":"r2b","origin_run_id":"r2a","run_type":"event","status":"succeeded"}}',
+    ].map((block) => `${block}\n\n`).join("");
+
+    const { hot } = upstream(sse);
+    const route = createHotProxyRoute(hot, { ...chat, allowStreamId: true });
+    const text = await (await route(jsonRequest({ event_type: "chat:send", event_data: {}, stream_id: "s1" }))).text();
+
+    expect(text).toContain('"task_id":"t1"');
+    expect(text).not.toContain('"task_id":"t_other"');
+    expect(text).toContain('"run_id":"r1"');
+    expect(text).toContain('"run_id":"r2a"');
+    expect(text).toContain('"text":"from-retry"');
+    expect(text).toContain('"run_id":"r2b"');
   });
 });

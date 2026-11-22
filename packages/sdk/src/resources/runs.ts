@@ -1,27 +1,19 @@
 import type { HttpClient } from "../http.js";
+import { enc } from "../path.js";
 import { STREAM_IDLE_TIMEOUT_MS, waitForSnapshot } from "../streaming/durable.js";
 import { consumeSseResponse } from "../streaming/sse.js";
 import type { RunUpdateEvent } from "../streaming/types.js";
-import { runResultMessage } from "../streaming/wait.js";
+import { HotRunError } from "../streaming/wait.js";
 import type { CallPurgeResponse, RunListQuery, RunRecord, RunStats } from "../types.js";
 
-const enc = encodeURIComponent;
+export { HotRunError };
 
 export interface WaitForRunOptions {
+  /** Total wait timeout in milliseconds (`0` disables it). Default `60000`. */
   timeoutMs?: number;
   /** Consecutive failed connections tolerated. Default 5. */
   maxReconnectAttempts?: number;
   signal?: AbortSignal;
-}
-
-export class HotRunError extends Error {
-  readonly run: RunRecord;
-
-  constructor(run: RunRecord) {
-    super(runResultMessage(run, "Run failed"));
-    this.name = "HotRunError";
-    this.run = run;
-  }
 }
 
 export class RunsResource {
@@ -42,7 +34,7 @@ export class RunsResource {
   }
 
   async get(runId: string, options?: { signal?: AbortSignal }) {
-    const envelope = await this.http.requestJson<RunRecord>("GET", `/runs/${runId}`, {
+    const envelope = await this.http.requestJson<RunRecord>("GET", `/runs/${enc(runId)}`, {
       signal: options?.signal,
     });
     return envelope.data;
@@ -75,8 +67,9 @@ export class RunsResource {
   }
 
   private subscribeOnce(runId: string, signal?: AbortSignal, idleTimeoutMs?: number) {
+    const path = `/runs/${enc(runId)}/subscribe`;
     return consumeSseResponse(async () => {
-      return this.http.requestRaw("GET", `/runs/${enc(runId)}/subscribe`, {
+      return this.http.requestRaw("GET", path, {
         headers: { Accept: "text/event-stream" },
         signal,
       });
@@ -90,6 +83,7 @@ export class RunsResource {
    * Reconnects with backoff on transient errors; stops on permanent ones.
    */
   async wait(runId: string, options?: WaitForRunOptions): Promise<RunRecord> {
+    enc(runId);
     return waitForSnapshot<RunRecord>({
       open: (signal) => this.subscribeOnce(runId, signal, STREAM_IDLE_TIMEOUT_MS),
       snapshot: (event) => (event.type === "run:update" ? event.run : undefined),

@@ -1,8 +1,16 @@
 import type { HttpClient } from "../http.js";
+import { enc } from "../path.js";
 import { followStream, RunCorrelator, STREAM_IDLE_TIMEOUT_MS } from "../streaming/durable.js";
 import { waitForCorrelatedRun, type WaitForRunOptions } from "../streaming/wait.js";
 import { StreamsResource } from "./streams.js";
-import type { EventRecord, ListQuery, PublishEventRequest, RunRecord } from "../types.js";
+import { splitListArgs, type SignalOptions } from "./list-args.js";
+import type {
+  ApiListResponse,
+  EventRecord,
+  ListQuery,
+  PublishEventRequest,
+  RunRecord,
+} from "../types.js";
 
 export class EventsResource {
   private readonly streams: StreamsResource;
@@ -27,15 +35,30 @@ export class EventsResource {
   }
 
   async get(eventId: string, options?: { signal?: AbortSignal }) {
-    const envelope = await this.http.requestJson<EventRecord>("GET", `/events/${eventId}`, {
+    const envelope = await this.http.requestJson<EventRecord>("GET", `/events/${enc(eventId)}`, {
       signal: options?.signal,
     });
     return envelope.data;
   }
 
-  async getRuns(eventId: string, options?: { signal?: AbortSignal }) {
-    return this.http.requestList<RunRecord>("GET", `/events/${eventId}/runs`, {
-      signal: options?.signal,
+  async getRuns(
+    eventId: string,
+    query?: ListQuery,
+    options?: SignalOptions,
+  ): Promise<ApiListResponse<RunRecord>>;
+  async getRuns(
+    eventId: string,
+    options?: SignalOptions,
+  ): Promise<ApiListResponse<RunRecord>>;
+  async getRuns(
+    eventId: string,
+    queryOrOptions?: ListQuery | SignalOptions,
+    options?: SignalOptions,
+  ): Promise<ApiListResponse<RunRecord>> {
+    const { query, signal } = splitListArgs(queryOrOptions, options);
+    return this.http.requestList<RunRecord>("GET", `/events/${enc(eventId)}/runs`, {
+      query,
+      signal,
     });
   }
 

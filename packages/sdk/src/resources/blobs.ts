@@ -1,6 +1,5 @@
 import type { HttpClient } from "../http.js";
-
-const enc = encodeURIComponent;
+import { enc } from "../path.js";
 
 /** Large payloads spilled to blob storage. Environment API key only. */
 export class BlobsResource {

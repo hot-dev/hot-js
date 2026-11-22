@@ -1,4 +1,5 @@
 import type { HttpClient } from "../http.js";
+import { enc } from "../path.js";
 import type {
   CallPurgeResponse,
   SubscribeWithEventParams,
@@ -13,8 +14,6 @@ import {
 } from "../streaming/durable.js";
 import { consumeSseResponse } from "../streaming/sse.js";
 import type { StreamEvent } from "../streaming/types.js";
-
-const enc = encodeURIComponent;
 
 /**
  * Options for the auto-reconnect behavior of `subscribeWithEvent`.
@@ -78,9 +77,10 @@ export class StreamsResource {
     streamId: string,
     options?: SubscribeWithEventParams & { signal?: AbortSignal },
   ): AsyncGenerator<StreamEvent, void, undefined> {
+    const path = `/streams/${enc(streamId)}/subscribe`;
     const { project, signal } = options ?? {};
     return consumeSseResponse(async () => {
-      return this.http.requestRaw("POST", `/streams/${enc(streamId)}/subscribe`, {
+      return this.http.requestRaw("POST", path, {
         query: project ? { project } : undefined,
         headers: { Accept: "text/event-stream" },
         signal,
@@ -140,9 +140,10 @@ export class StreamsResource {
     options?: SubscribeWithEventParams & { signal?: AbortSignal },
     idleTimeoutMs?: number,
   ): AsyncGenerator<StreamEvent, void, undefined> {
+    const path = `/streams/${enc(streamId)}/subscribe`;
     const { project, signal } = options ?? {};
     return consumeSseResponse(async () => {
-      return this.http.requestRaw("GET", `/streams/${enc(streamId)}/subscribe`, {
+      return this.http.requestRaw("GET", path, {
         query: project ? { project } : undefined,
         headers: { Accept: "text/event-stream" },
         signal,

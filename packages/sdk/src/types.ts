@@ -40,7 +40,6 @@ export type Query = Record<string, string | number | boolean | undefined>;
 export interface ListQuery {
   limit?: number;
   offset?: number;
-  [key: string]: string | number | boolean | undefined;
 }
 
 export type JsonObject = Record<string, unknown>;
@@ -119,6 +118,13 @@ export interface ProjectActivateResponse {
   redeployed_build_id?: string | null;
 }
 
+export interface BuildRuntimeWarning {
+  build_engine_version: string;
+  build_hot_std_version?: string | null;
+  runtime_version: string;
+  message: string;
+}
+
 export interface BuildRecord {
   build_id: string;
   project_id: string;
@@ -127,10 +133,14 @@ export interface BuildRecord {
   build_type: string;
   deployed: boolean;
   active: boolean;
+  runtime_status: string;
+  runtime_error?: string | null;
+  deployment_sequence: number;
   created_at: string;
   updated_at: string;
   storage_path?: string | null;
   storage_backend?: string | null;
+  runtime_warning?: BuildRuntimeWarning | null;
 }
 
 export interface BuildWithProjectRecord extends BuildRecord {
@@ -190,8 +200,8 @@ export interface RunRecord {
   origin_run_id: string | null;
   event_id: string | null;
   result: unknown | null;
-  project_id: string | null;
-  project_name: string | null;
+  project_id?: string | null;
+  project_name?: string | null;
   retry_attempt: number;
   next_retry_at?: string | null;
 }
@@ -627,11 +637,18 @@ export interface CreateEnvRequest {
 export type ApiKeyScope = "org" | "env";
 
 /**
- * Why a key works or doesn't. `issuer_inactive`: a key in its issuer chain is
- * revoked or expired. `suspended`: its organization or environment is
- * suspended, and the key works again on reactivation.
+ * Why a key works or doesn't. `disabled`: explicitly disabled.
+ * `issuer_inactive`: a key in its issuer chain is revoked or expired.
+ * `suspended`: its organization or environment is suspended, and the key works
+ * again on reactivation.
  */
-export type ApiKeyStatus = "active" | "revoked" | "expired" | "issuer_inactive" | "suspended";
+export type ApiKeyStatus =
+  | "active"
+  | "revoked"
+  | "expired"
+  | "issuer_inactive"
+  | "suspended"
+  | "disabled";
 
 export interface ApiKeyRecord {
   api_key_id: string;

@@ -1,11 +1,13 @@
 import type { HttpClient } from "../http.js";
+import { enc } from "../path.js";
 import type {
+  ApiListResponse,
   CreateDomainRequest,
   DomainRecord,
   DomainVerifyResponse,
+  ListQuery,
 } from "../types.js";
-
-const enc = encodeURIComponent;
+import { splitListArgs, type SignalOptions } from "./list-args.js";
 
 export class DomainsResource {
   constructor(private readonly http: HttpClient) {}
@@ -18,10 +20,14 @@ export class DomainsResource {
     return envelope.data;
   }
 
-  async list(options?: { signal?: AbortSignal }) {
-    return this.http.requestList<DomainRecord>("GET", "/domains", {
-      signal: options?.signal,
-    });
+  async list(query?: ListQuery, options?: SignalOptions): Promise<ApiListResponse<DomainRecord>>;
+  async list(options?: SignalOptions): Promise<ApiListResponse<DomainRecord>>;
+  async list(
+    queryOrOptions?: ListQuery | SignalOptions,
+    options?: SignalOptions,
+  ): Promise<ApiListResponse<DomainRecord>> {
+    const { query, signal } = splitListArgs(queryOrOptions, options);
+    return this.http.requestList<DomainRecord>("GET", "/domains", { query, signal });
   }
 
   async get(domainId: string, options?: { signal?: AbortSignal }) {

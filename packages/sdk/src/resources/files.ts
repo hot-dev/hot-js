@@ -1,4 +1,5 @@
-import type { HttpClient } from "../http.js";
+import { parseJsonText, type HttpClient } from "../http.js";
+import { enc, encPath } from "../path.js";
 import type {
   ApiResponse,
   FileListQuery,
@@ -7,9 +8,6 @@ import type {
   InitiateUploadResponse,
   UploadPartResponse,
 } from "../types.js";
-
-const enc = encodeURIComponent;
-const encPath = (path: string) => path.split("/").map(enc).join("/");
 
 export class FilesResource {
   constructor(private readonly http: HttpClient) {}
@@ -44,15 +42,16 @@ export class FilesResource {
     contentType?: string;
     signal?: AbortSignal;
   }) {
+    const encodedPath = encPath(path);
     const headers: Record<string, string> = { Accept: "application/json" };
     if (options?.contentType) headers["Content-Type"] = options.contentType;
 
-    const response = await this.http.requestRaw("PUT", `/files/upload/${encPath(path)}`, {
+    const response = await this.http.requestRaw("PUT", `/files/upload/${encodedPath}`, {
       headers,
       body,
       signal: options?.signal,
     });
-    const envelope = await response.json() as ApiResponse<FileRecord>;
+    const envelope = parseJsonText<ApiResponse<FileRecord>>(await response.text(), response);
     return envelope.data;
   }
 
@@ -70,12 +69,16 @@ export class FilesResource {
     body: BodyInit,
     options?: { signal?: AbortSignal },
   ) {
-    const response = await this.http.requestRaw("PUT", `/files/uploads/${enc(uploadId)}/${partNumber}`, {
-      headers: { Accept: "application/json" },
-      body,
-      signal: options?.signal,
-    });
-    const envelope = await response.json() as ApiResponse<UploadPartResponse>;
+    const response = await this.http.requestRaw(
+      "PUT",
+      `/files/uploads/${enc(uploadId)}/${enc(String(partNumber))}`,
+      {
+        headers: { Accept: "application/json" },
+        body,
+        signal: options?.signal,
+      },
+    );
+    const envelope = parseJsonText<ApiResponse<UploadPartResponse>>(await response.text(), response);
     return envelope.data;
   }
 

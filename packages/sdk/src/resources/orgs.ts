@@ -1,7 +1,9 @@
 import type { HttpClient } from "../http.js";
+import { enc } from "../path.js";
 import type {
   AccountUsage,
   ApiKeyRecord,
+  ApiListResponse,
   CallPurgeResponse,
   CreateApiKeyRequest,
   CreateEnvRequest,
@@ -17,9 +19,8 @@ import type {
 } from "../types.js";
 import { BuildsResource } from "./builds.js";
 import { ContextResource } from "./context.js";
+import { splitListArgs, type SignalOptions } from "./list-args.js";
 import { ProjectsResource } from "./projects.js";
-
-const enc = encodeURIComponent;
 
 /**
  * Organizations, environments and API keys (`/v1/orgs`). These routes accept
@@ -89,9 +90,24 @@ export class OrgsResource {
     return envelope.data;
   }
 
-  async listEnvs(orgId: string, options?: { signal?: AbortSignal }) {
+  async listEnvs(
+    orgId: string,
+    query?: ListQuery,
+    options?: SignalOptions,
+  ): Promise<ApiListResponse<OrgEnvRecord>>;
+  async listEnvs(
+    orgId: string,
+    options?: SignalOptions,
+  ): Promise<ApiListResponse<OrgEnvRecord>>;
+  async listEnvs(
+    orgId: string,
+    queryOrOptions?: ListQuery | SignalOptions,
+    options?: SignalOptions,
+  ): Promise<ApiListResponse<OrgEnvRecord>> {
+    const { query, signal } = splitListArgs(queryOrOptions, options);
     return this.http.requestList<OrgEnvRecord>("GET", `/orgs/${enc(orgId)}/envs`, {
-      signal: options?.signal,
+      query,
+      signal,
     });
   }
 

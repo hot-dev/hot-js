@@ -1,4 +1,5 @@
-import type { HttpClient } from "../http.js";
+import { parseJsonText, type HttpClient } from "../http.js";
+import { enc } from "../path.js";
 import type {
   ApiResponse,
   BuildRecord,
@@ -7,14 +8,20 @@ import type {
   ListQuery,
 } from "../types.js";
 
-const enc = encodeURIComponent;
-
 export interface UploadBuildOptions {
   file: BodyInit;
   hash: string;
   build_id?: string;
   filename?: string;
   signal?: AbortSignal;
+}
+
+function toBlob(file: BodyInit): Blob {
+  if (file instanceof Blob) return file;
+  if (typeof file === "string" || file instanceof ArrayBuffer || ArrayBuffer.isView(file)) {
+    return new Blob([file as BlobPart]);
+  }
+  throw new TypeError("builds.upload requires file to be a Blob, Uint8Array, ArrayBuffer, or string");
 }
 
 export class BuildsResource {
@@ -66,17 +73,18 @@ export class BuildsResource {
   }
 
   async upload(project: string, options: UploadBuildOptions) {
+    const path = `${this.prefix}/projects/${enc(project)}/builds`;
     const form = new FormData();
     form.set("hash", options.hash);
     if (options.build_id) form.set("build_id", options.build_id);
-    form.set("file", options.file as Blob, options.filename ?? "build.hot.zip");
+    form.set("file", toBlob(options.file), options.filename ?? "build.hot.zip");
 
-    const response = await this.http.requestRaw("POST", `${this.prefix}/projects/${enc(project)}/builds`, {
+    const response = await this.http.requestRaw("POST", path, {
       headers: { Accept: "application/json" },
       body: form,
       signal: options.signal,
     });
-    const envelope = await response.json() as ApiResponse<BuildUploadResponse>;
+    const envelope = parseJsonText<ApiResponse<BuildUploadResponse>>(await response.text(), response);
     return envelope.data;
   }
 

@@ -298,7 +298,11 @@ export const POST = createHotProxyRoute(clientFor, {
   allowEventTypes: ["team-agent:ask"],
   authorize: async (request, event) => {
     const user = await requireUser(request);
-    return { ...event, event_data: { ...(event.event_data as object), user_id: user.id } };
+    const data =
+      event.event_data && typeof event.event_data === "object" && !Array.isArray(event.event_data)
+        ? (event.event_data as Record<string, unknown>)
+        : {};
+    return { ...event, event_data: { ...data, user_id: user.id } };
   },
 });
 ```
@@ -365,8 +369,8 @@ try {
 | `apiKeys.get(id)` / `apiKeys.update(id, { permissions })` / `apiKeys.revoke(id)` / `apiKeys.rotate(id, { overlap_seconds? })` | `/v1/api-keys/{key_id}` |
 
 A key's `status` says why it works or doesn't: `active`, `revoked`, `expired`,
-`issuer_inactive` (a key in its issuer chain stopped) or `suspended` (its
-organization or environment is suspended, and it works again on reactivation).
+`disabled`, `issuer_inactive` (a key in its issuer chain stopped) or `suspended`
+(its organization or environment is suspended, and it works again on reactivation).
 
 Minted keys return their `token` once. Grants of a minted key must fit inside
 the minting key's grants; revoking, narrowing or expiring a key restricts

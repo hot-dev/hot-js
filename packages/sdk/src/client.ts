@@ -68,6 +68,7 @@ export class HotClient {
   async status(options?: { signal?: AbortSignal }): Promise<ServerStatus> {
     return this.http.requestJsonEnvelope<ServerStatus>("GET", "/status", {
       base: this.http.baseUrl,
+      auth: false,
       signal: options?.signal,
     });
   }
@@ -113,6 +114,7 @@ export class HotClient {
 }
 
 function apiPath(path: string): string {
-  const relative = path.startsWith("/v1/") ? path.slice(3) : path;
-  return relative.startsWith("/") ? relative : `/${relative}`;
+  const normalized = path.startsWith("/") ? path : `/${path}`;
+  if (normalized === "/v1") return "/";
+  return normalized.startsWith("/v1/") ? normalized.slice(3) : normalized;
 }

@@ -17,7 +17,7 @@ export class HotApiError extends Error {
     this.status = status;
     this.code = parsed?.error?.code ?? "unknown";
     this.requestId = parsed?.error?.request_id;
-    this.retryAfter = parsed?.error?.retry_after ?? retryAfterFromHeader(headers);
+    this.retryAfter = validRetryAfter(parsed?.error?.retry_after) ?? retryAfterFromHeader(headers);
     this.body = body;
     this.error = parsed?.error;
     this.headers = headers ?? new Headers();
@@ -57,13 +57,11 @@ export function requiredScopeForPath(path: string): KeyScope {
 }
 
 export function isHotApiError(error: unknown): error is HotApiError {
-  return error instanceof HotApiError
-    || (
-      typeof error === "object"
-      && error !== null
-      && (error as { name?: unknown }).name === "HotApiError"
-      && typeof (error as { status?: unknown }).status === "number"
-    );
+  if (error instanceof HotApiError) return true;
+  if (typeof error !== "object" || error === null) return false;
+  const name = (error as { name?: unknown }).name;
+  return (name === "HotApiError" || name === "HotKeyScopeError")
+    && typeof (error as { status?: unknown }).status === "number";
 }
 
 /**
@@ -106,11 +104,27 @@ function structuredErrorBody(value: unknown): ApiErrorBody | undefined {
   return value as ApiErrorBody;
 }
 
+function validRetryAfter(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
 function retryAfterFromHeader(headers: Headers | undefined): number | undefined {
-  const value = headers?.get("Retry-After");
-  if (!value) return undefined;
-  const seconds = Number(value);
-  return Number.isFinite(seconds) ? seconds : undefined;
+  const raw = headers?.get("Retry-After");
+  if (!raw) return undefined;
+  const trimmed = raw.trim();
+  if (!trimmed || trimmed.startsWith("-")) return undefined;
+
+  const seconds = Number(trimmed);
+  if (!Number.isNaN(seconds)) {
+    return Number.isFinite(seconds) && seconds >= 0 ? seconds : undefined;
+  }
+
+  // RFC 9110 §10.2.3 HTTP-date
+  const dateMs = Date.parse(trimmed);
+  if (Number.isFinite(dateMs)) {
+    return Math.max(0, (dateMs - Date.now()) / 1000);
+  }
+  return undefined;
 }
 
 /** Permanent authorization failures must not be retried by SSE reconnect loops. */
