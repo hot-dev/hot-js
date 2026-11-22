@@ -7,6 +7,11 @@ updates:
     groups:
       dev-toolchain:
         dependency-type: development
+    ignore:
+      # tsup 9 (the latest) needs the TypeScript compiler API, which
+      # TypeScript 7 no longer ships. Drop this once tsup supports 7.
+      - dependency-name: typescript
+        versions: [">=7.0.0"]
   - package-ecosystem: github-actions
     directory: /
     schedule:
