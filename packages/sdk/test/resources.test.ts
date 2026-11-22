@@ -1,5 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { HotClient } from "../src/client.js";
+import {
+  HotClient,
+  HttpClient,
+  type ApiKeyStatus,
+  type BuildRecord,
+  type BuildRuntimeWarning,
+  type RequestOptions,
+  type RunRecord,
+  type TaskUpdateEvent,
+} from "../src/index.js";
+import type { ConsumeSseOptions, TaskUpdateEvent as StreamingTaskUpdateEvent } from "../src/streaming/index.js";
+import type { ParseSlashCommandOptions, WebMessageIds } from "../src/agent/index.js";
+import { VERSION } from "../src/version.js";
 
 interface RecordedCall {
   method?: string;
@@ -18,8 +30,8 @@ function createRecordingClient() {
         url,
       });
 
-      const headers = init?.headers as Record<string, string> | undefined;
-      if (headers?.Accept === "text/event-stream") {
+      const headers = new Headers(init?.headers);
+      if (headers.get("Accept") === "text/event-stream") {
         return new Response('data: {"type":"stream:complete","stream_id":"s1"}\n\n', {
           headers: { "Content-Type": "text/event-stream" },
         });
@@ -224,19 +236,24 @@ describe("server status", () => {
     start_time: "2026-11-06T10:00:00Z",
   };
 
-  it("reads GET /status from the server's root, not under /v1", async () => {
+  it("reads GET /status from the server's root without sending an Authorization header", async () => {
     const urls: string[] = [];
+    const seenHeaders: Headers[] = [];
     const hot = new HotClient({
       baseUrl: "http://hot.test/",
       token: "hot_key",
-      fetch: async (input) => {
+      fetch: async (input, init) => {
         urls.push(String(input));
+        seenHeaders.push(new Headers(init?.headers));
         return Response.json(body);
       },
     });
 
     await expect(hot.status()).resolves.toEqual(body);
     expect(urls).toEqual(["http://hot.test/status"]);
+    expect(seenHeaders[0]!.has("Authorization")).toBe(false);
+    expect(seenHeaders[0]!.get("User-Agent")).toBe(`hot-sdk-js/${VERSION}`);
+    expect(seenHeaders[0]!.get("Accept")).toBe("application/json");
   });
 
   it("retries a brief outage, as other JSON calls do", async () => {
@@ -318,6 +335,209 @@ describe("event ids", () => {
     await hot.events.publish({ event_id: "e-1", event_type: "order:placed", event_data: {} });
 
     expect(bodies).toEqual([{ event_id: "e-1", event_type: "order:placed", event_data: {} }]);
+  });
+});
+
+describe("path validation and encoding", () => {
+  it("rejects empty, dot, and traversal path segments locally before calling fetch", async () => {
+    let fetchCalls = 0;
+    const hot = new HotClient({
+      baseUrl: "http://hot.test",
+      token: "t",
+      fetch: async () => {
+        fetchCalls += 1;
+        return Response.json({ data: {}, meta: {} });
+      },
+    });
+
+    await expect(hot.sessions.revoke(".")).rejects.toThrow(RangeError);
+    await expect(hot.tasks.get("..")).rejects.toThrow(RangeError);
+    await expect(hot.runs.get("..")).rejects.toThrow(RangeError);
+    await expect(hot.runs.get("")).rejects.toThrow(RangeError);
+    await expect(hot.events.get(".")).rejects.toThrow(RangeError);
+    await expect(hot.events.getRuns("..")).rejects.toThrow(RangeError);
+    await expect(hot.files.upload("../x", "hi")).rejects.toThrow(RangeError);
+    await expect(hot.files.upload("", "hi")).rejects.toThrow(RangeError);
+    await expect(hot.files.upload("/", "hi")).rejects.toThrow(RangeError);
+    await expect(hot.files.upload("/a//b", "hi")).rejects.toThrow(RangeError);
+    await expect(hot.files.upload("a/./b", "hi")).rejects.toThrow(RangeError);
+    await expect(hot.runs.wait("..")).rejects.toThrow(RangeError);
+    await expect(hot.tasks.wait(".")).rejects.toThrow(RangeError);
+    expect(() => hot.streams.subscribe("..")).toThrow(RangeError);
+    expect(fetchCalls).toBe(0);
+  });
+
+  it("percent-encodes special characters in IDs and normalizes leading slash in file paths", async () => {
+    const { hot, calls } = createRecordingClient();
+
+    await hot.runs.get("../service-keys");
+    await hot.events.get("a/b");
+    await hot.events.getRuns("a/b");
+    await hot.tasks.get("a/b?c=1");
+    await hot.files.upload("/logs/a b.txt", "hello");
+
+    expect(calls.map((c) => `${c.method} ${new URL(c.url).pathname}`)).toEqual([
+      "GET /v1/runs/..%2Fservice-keys",
+      "GET /v1/events/a%2Fb",
+      "GET /v1/events/a%2Fb/runs",
+      "GET /v1/tasks/a%2Fb%3Fc%3D1",
+      "PUT /v1/files/upload/logs/a%20b.txt",
+    ]);
+  });
+});
+
+describe("HttpClient normalization, headers, token hiding, uploads, and pagination", () => {
+  it("normalizes trailing slashes and /v1 in baseUrl and apiPath('v1/...')", async () => {
+    const urls: string[] = [];
+    const hot = new HotClient({
+      baseUrl: "http://hot.test/v1///",
+      token: "secret-key-123",
+      fetch: async (input) => {
+        urls.push(String(input));
+        return Response.json({ data: {}, meta: {} });
+      },
+    });
+
+    expect(hot.http).toBeInstanceOf(HttpClient);
+    expect(hot.http.baseUrl).toBe("http://hot.test");
+    expect(hot.apiBaseUrl).toBe("http://hot.test/v1");
+    await hot.request("GET", "v1/env");
+    await hot.request("GET", "/v1/runs/stats");
+    await hot.status();
+    expect(urls).toEqual([
+      "http://hot.test/v1/env",
+      "http://hot.test/v1/runs/stats",
+      "http://hot.test/status",
+    ]);
+
+    // Token is accessible via getter but non-enumerable / hidden from JSON.stringify
+    expect(hot.token).toBe("secret-key-123");
+    expect(Object.keys(hot.http)).not.toContain("token");
+    expect(JSON.stringify(hot)).not.toContain("secret-key-123");
+  });
+
+  it("merges Headers instances, tuple arrays, and case-variant headers without duplicates", async () => {
+    const captured: Headers[] = [];
+    const hot = new HotClient({
+      baseUrl: "http://hot.test",
+      token: "tok",
+      fetch: async (_input, init) => {
+        captured.push(new Headers(init?.headers));
+        return Response.json({ data: {}, meta: {} });
+      },
+    });
+
+    await hot.request("POST", "/events", {
+      body: { a: 1 },
+      headers: new Headers({ "content-type": "application/merge-patch+json", "X-Trace": "t1" }),
+    });
+    await hot.request("GET", "/env", {
+      headers: [["accept", "application/vnd.hot+json"], ["x-tuple", "yes"]],
+    });
+
+    expect(captured[0]!.get("content-type")).toBe("application/merge-patch+json");
+    expect(captured[0]!.get("x-trace")).toBe("t1");
+    expect(captured[0]!.get("authorization")).toBe("Bearer tok");
+    expect(captured[1]!.get("accept")).toBe("application/vnd.hot+json");
+    expect(captured[1]!.get("x-tuple")).toBe("yes");
+  });
+
+  it("wraps non-Blob builds.upload inputs (Uint8Array, ArrayBuffer, string) into a Blob with filename", async () => {
+    const uploads: Array<{ name: string; bytes: Uint8Array }> = [];
+    const hot = new HotClient({
+      baseUrl: "http://hot.test",
+      token: "tok",
+      fetch: async (_input, init) => {
+        const form = init?.body as FormData;
+        const file = form.get("file") as File;
+        uploads.push({ name: file.name, bytes: new Uint8Array(await file.arrayBuffer()) });
+        return Response.json({ data: { build_id: "b1" }, meta: {} });
+      },
+    });
+
+    await hot.builds.upload("demo", { file: new Uint8Array([1, 2, 3]), hash: "h1", filename: "u8.zip" });
+    await hot.builds.upload("demo", { file: new Uint8Array([4, 5]).buffer, hash: "h2", filename: "ab.zip" });
+    await hot.builds.upload("demo", { file: "zip-text", hash: "h3" });
+
+    expect(uploads.map((u) => u.name)).toEqual(["u8.zip", "ab.zip", "build.hot.zip"]);
+    expect(Array.from(uploads[0]!.bytes)).toEqual([1, 2, 3]);
+    expect(Array.from(uploads[1]!.bytes)).toEqual([4, 5]);
+    expect(new TextDecoder().decode(uploads[2]!.bytes)).toBe("zip-text");
+  });
+
+  it("passes optional pagination ListQuery and preserves 1.3.0 { signal } call form", async () => {
+    const { hot, calls } = createRecordingClient();
+    const ac = new AbortController();
+
+    await hot.orgs.listEnvs("org-1", { limit: 10, offset: 20 });
+    await hot.context.list("demo", { limit: 5 });
+    await hot.domains.list({ limit: 15, offset: 5 });
+    await hot.projects.eventHandlers("demo", { limit: 25 });
+    await hot.projects.schedules("demo", { offset: 3 });
+    await hot.events.getRuns("evt-1", { limit: 7 });
+    // Legacy 1.3.0 { signal } call form must not serialize `signal` as a query parameter
+    await hot.domains.list({ signal: ac.signal });
+    await hot.context.list("demo", { signal: ac.signal });
+
+    expect(calls.map((c) => new URL(c.url).pathname + new URL(c.url).search)).toEqual([
+      "/v1/orgs/org-1/envs?limit=10&offset=20",
+      "/v1/projects/demo/context?limit=5",
+      "/v1/domains?limit=15&offset=5",
+      "/v1/projects/demo/event-handlers?limit=25",
+      "/v1/projects/demo/schedules?offset=3",
+      "/v1/events/evt-1/runs?limit=7",
+      "/v1/domains",
+      "/v1/projects/demo/context",
+    ]);
+  });
+
+  it("supports Hot API 3.0.14 types and public exports", () => {
+    const disabledStatus: ApiKeyStatus = "disabled";
+    const warning: BuildRuntimeWarning = {
+      build_engine_version: "3.0.10",
+      build_hot_std_version: "3.0.10",
+      runtime_version: "3.0.14",
+      message: "version mismatch",
+    };
+    const build: BuildRecord = {
+      build_id: "b1",
+      project_id: "p1",
+      hash: "abc",
+      size: 10,
+      build_type: "hot",
+      deployed: true,
+      active: true,
+      runtime_status: "ready",
+      deployment_sequence: 1,
+      runtime_error: null,
+      runtime_warning: warning,
+      created_at: "2026-01-01T00:00:00Z",
+      updated_at: "2026-01-01T00:00:00Z",
+    };
+    const run: RunRecord = {
+      run_id: "r1",
+      env_id: "e1",
+      stream_id: "s1",
+      build_id: null,
+      run_type: "event",
+      status: "succeeded",
+      start_time: "2026-01-01T00:00:00Z",
+      stop_time: null,
+      origin_run_id: null,
+      event_id: null,
+      result: null,
+      retry_attempt: 0,
+    };
+    const _reqOpts: RequestOptions = { headers: new Headers() };
+    const _sseOpts: ConsumeSseOptions = { maxBufferBytes: 1024 };
+    const _cmdOpts: ParseSlashCommandOptions = { fallbackEvent: "x" };
+    const _ids: WebMessageIds = { userBare: "u", chatBare: "c", sessionId: "s", messageId: "m" };
+    const _taskEvt: TaskUpdateEvent | StreamingTaskUpdateEvent | undefined = undefined;
+
+    expect(disabledStatus).toBe("disabled");
+    expect(build.runtime_status).toBe("ready");
+    expect(run.project_id).toBeUndefined();
+    expect([_reqOpts, _sseOpts, _cmdOpts, _ids, _taskEvt]).toHaveLength(5);
   });
 });
 

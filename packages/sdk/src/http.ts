@@ -1,60 +1,131 @@
 import { HotApiError, isRetryableStatus, parseApiError } from "./errors.js";
-import { backoffDelayMs, mergeAbortSignals, sleep, timeoutError } from "./retry.js";
+import {
+  backoffDelayMs,
+  clampTimeoutMs,
+  mergeAbortSignals,
+  normalizeTimeoutMs,
+  sleep,
+  timeoutError,
+} from "./retry.js";
 import type {
   ApiListResponse,
   ApiResponse,
   HotClientOptions,
+  ListQuery,
   Query,
   ResponseMeta,
 } from "./types.js";
+import { stripTrailingSlashes } from "./path.js";
 import { VERSION } from "./version.js";
 
 const DEFAULT_BASE_URL = "https://api.hot.dev";
 const DEFAULT_TIMEOUT_MS = 60_000;
-const USER_AGENT = `hot-sdk-js/${VERSION}`;
+export const USER_AGENT = `hot-sdk-js/${VERSION}`;
 
-// JSON requests retry on 429 when the server supplies retry_after, and
-// idempotent ones also on 502, 503 and 504.
+// JSON requests retry on 429 when the server supplies retry_after, on POST 503
+// event_publish_in_progress, and for idempotent methods on 502, 503 and 504.
 const MAX_RETRIES = 2;
 const MAX_RETRY_AFTER_SECONDS = 30;
 const IDEMPOTENT_METHODS = new Set(["GET", "HEAD", "PUT", "DELETE"]);
 const TRANSIENT_GATEWAY_STATUSES = new Set([502, 503, 504]);
 
+const CANONICAL_HEADER_NAMES: ReadonlyMap<string, string> = new Map([
+  ["authorization", "Authorization"],
+  ["user-agent", "User-Agent"],
+  ["accept", "Accept"],
+  ["content-type", "Content-Type"],
+]);
+
+export type QueryInput = Query | ListQuery;
+
 export interface RequestOptions {
   signal?: AbortSignal;
-  headers?: Record<string, string>;
+  headers?: HeadersInit;
 }
 
 type JsonRequestInit = RequestInit & {
-  query?: Query;
+  query?: QueryInput;
   /** Where `path` starts, for a route outside `/v1`. */
   base?: string;
+  /** Whether to attach the `Authorization` header. Defaults to `true`. */
+  auth?: boolean;
 };
+
+/** Parse a 2xx JSON response body, wrapping `SyntaxError` with HTTP context. */
+export function parseJsonText<T>(text: string, response: Response): T {
+  try {
+    return JSON.parse(text) as T;
+  } catch (cause) {
+    const contentType = response.headers.get("content-type") ?? "unknown";
+    const preview = text.length > 200 ? `${text.slice(0, 200)}...` : text;
+    throw new Error(
+      `Hot API returned invalid JSON (status ${response.status}, content-type ${contentType}): ${preview}`,
+      { cause },
+    );
+  }
+}
+
+/** Add bounded positive jitter to a server-supplied `Retry-After` delay (seconds). */
+function jitteredRetryAfterMs(seconds: number): number {
+  if (seconds <= 0) return 0;
+  const baseMs = seconds * 1000;
+  return baseMs + Math.random() * Math.min(1_000, baseMs * 0.25);
+}
 
 export class HttpClient {
   readonly baseUrl: string;
   readonly apiBaseUrl: string;
-  readonly token: string;
   readonly fetchFn: typeof fetch;
   readonly timeoutMs: number;
+  #token: string;
 
   constructor(options: HotClientOptions) {
-    this.baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/$/, "");
+    const trimmed = stripTrailingSlashes(options.baseUrl ?? DEFAULT_BASE_URL);
+    this.baseUrl = trimmed.endsWith("/v1")
+      ? stripTrailingSlashes(trimmed.slice(0, -3))
+      : trimmed;
     this.apiBaseUrl = `${this.baseUrl}/v1`;
-    this.token = options.token;
+    this.#token = options.token;
     this.fetchFn = options.fetch ?? globalThis.fetch.bind(globalThis);
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   }
 
-  authHeaders(extra?: Record<string, string>): Record<string, string> {
-    return {
-      Authorization: `Bearer ${this.token}`,
-      "User-Agent": USER_AGENT,
-      ...extra,
-    };
+  /** Bearer token configured on this client (non-enumerable to avoid accidental logging). */
+  get token(): string {
+    return this.#token;
   }
 
-  buildQuery(params?: Query): string {
+  authHeaders(extra?: HeadersInit): Record<string, string> {
+    const merged = this.buildHeaders(true, undefined, extra);
+    const result: Record<string, string> = {};
+    merged.forEach((value, key) => {
+      result[CANONICAL_HEADER_NAMES.get(key) ?? key] = value;
+    });
+    return result;
+  }
+
+  private buildHeaders(
+    auth: boolean,
+    defaults?: Record<string, string>,
+    extra?: HeadersInit,
+  ): Headers {
+    const headers = new Headers();
+    if (auth) headers.set("Authorization", `Bearer ${this.#token}`);
+    headers.set("User-Agent", USER_AGENT);
+    if (defaults) {
+      for (const [key, value] of Object.entries(defaults)) {
+        headers.set(key, value);
+      }
+    }
+    if (extra) {
+      new Headers(extra).forEach((value, key) => {
+        headers.set(key, value);
+      });
+    }
+    return headers;
+  }
+
+  buildQuery(params?: QueryInput): string {
     if (!params) return "";
     const search = new URLSearchParams();
     for (const [key, value] of Object.entries(params)) {
@@ -96,17 +167,45 @@ export class HttpClient {
   ): Promise<T> {
     const query = init?.query ? this.buildQuery(init.query) : "";
     const url = `${init?.base ?? this.apiBaseUrl}${path}${query}`;
-    const { query: _query, base: _base, signal: callerSignal, ...rest } = init ?? {};
+    const {
+      query: _query,
+      base: _base,
+      auth = true,
+      signal: callerSignal,
+      headers: extraHeaders,
+      ...rest
+    } = init ?? {};
+
+    const effectiveTimeoutMs = normalizeTimeoutMs(this.timeoutMs);
+    const overallDeadline = effectiveTimeoutMs !== undefined
+      ? Date.now() + effectiveTimeoutMs
+      : undefined;
+
+    const defaults: Record<string, string> = { Accept: "application/json" };
+    if (rest.body !== undefined && rest.body !== null) {
+      defaults["Content-Type"] = "application/json";
+    }
+    const headers = this.buildHeaders(auth, defaults, extraHeaders);
 
     for (let attempt = 0; ; attempt++) {
-      const deadline = this.timeoutMs > 0 ? new AbortController() : undefined;
-      const timer = deadline
-        ? setTimeout(
-          () => deadline.abort(timeoutError(`Hot API request timed out after ${this.timeoutMs} ms`)),
-          this.timeoutMs,
-        )
-        : undefined;
-      const signal = deadline ? mergeAbortSignals([callerSignal, deadline.signal]) : callerSignal;
+      let deadline: AbortController | undefined;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      if (overallDeadline !== undefined) {
+        const remainingMs = overallDeadline - Date.now();
+        if (remainingMs <= 0) {
+          throw timeoutError(`Hot API request timed out after ${this.timeoutMs} ms`);
+        }
+        deadline = new AbortController();
+        timer = setTimeout(
+          () => deadline!.abort(timeoutError(`Hot API request timed out after ${this.timeoutMs} ms`)),
+          clampTimeoutMs(remainingMs),
+        );
+      }
+
+      const signal = deadline
+        ? mergeAbortSignals([callerSignal, deadline.signal])
+        : callerSignal;
+
       let response: Response;
       let text: string;
       try {
@@ -114,11 +213,8 @@ export class HttpClient {
           ...rest,
           method,
           signal,
-          headers: this.authHeaders({
-            Accept: "application/json",
-            ...(rest.body ? { "Content-Type": "application/json" } : {}),
-            ...(rest.headers as Record<string, string> | undefined),
-          }),
+          redirect: "manual",
+          headers,
         });
         text = await response.text();
       } catch (error) {
@@ -131,6 +227,9 @@ export class HttpClient {
         const error = parseApiError(response.status, text, response.headers, path);
         const delay = this.retryDelay(method, error, attempt);
         if (delay !== undefined) {
+          if (overallDeadline !== undefined && Date.now() + delay >= overallDeadline) {
+            throw timeoutError(`Hot API request timed out after ${this.timeoutMs} ms`, error);
+          }
           await sleep(delay, callerSignal);
           continue;
         }
@@ -142,7 +241,7 @@ export class HttpClient {
           meta: {} as ResponseMeta,
         } as T;
       }
-      return JSON.parse(text) as T;
+      return parseJsonText<T>(text, response);
     }
   }
 
@@ -152,9 +251,15 @@ export class HttpClient {
       ? undefined
       : Math.min(error.retryAfter, MAX_RETRY_AFTER_SECONDS);
     if (error.status === 429) {
-      return retryAfter === undefined ? undefined : retryAfter * 1000;
+      return retryAfter === undefined ? undefined : jitteredRetryAfterMs(retryAfter);
     }
-    if (IDEMPOTENT_METHODS.has(method.toUpperCase()) && TRANSIENT_GATEWAY_STATUSES.has(error.status)) {
+    const upper = method.toUpperCase();
+    if (upper === "POST" && error.status === 503 && error.code === "event_publish_in_progress") {
+      return retryAfter !== undefined
+        ? jitteredRetryAfterMs(retryAfter)
+        : backoffDelayMs(attempt + 1);
+    }
+    if (IDEMPOTENT_METHODS.has(upper) && TRANSIENT_GATEWAY_STATUSES.has(error.status)) {
       return backoffDelayMs(attempt + 1, retryAfter);
     }
     return undefined;
@@ -167,18 +272,17 @@ export class HttpClient {
   async requestRaw(
     method: string,
     path: string,
-    init?: RequestInit & { query?: Query },
+    init?: RequestInit & { query?: QueryInput },
   ): Promise<Response> {
     const query = init?.query ? this.buildQuery(init.query) : "";
     const url = `${this.apiBaseUrl}${path}${query}`;
-    const { query: _query, ...rest } = init ?? {};
+    const { query: _query, headers: extraHeaders, ...rest } = init ?? {};
 
     const response = await this.fetchFn(url, {
       ...rest,
       method,
-      headers: this.authHeaders({
-        ...(rest.headers as Record<string, string> | undefined),
-      }),
+      redirect: "manual",
+      headers: this.buildHeaders(true, undefined, extraHeaders),
     });
 
     if (!response.ok) {

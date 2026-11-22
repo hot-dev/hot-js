@@ -1,5 +1,7 @@
 import type { HttpClient } from "../http.js";
+import { enc } from "../path.js";
 import type {
+  ApiListResponse,
   CreateProjectRequest,
   EventHandlerRecord,
   ListQuery,
@@ -8,8 +10,7 @@ import type {
   ScheduleRecord,
   UpdateProjectRequest,
 } from "../types.js";
-
-const enc = encodeURIComponent;
+import { splitListArgs, type SignalOptions } from "./list-args.js";
 
 export class ProjectsResource {
   /**
@@ -72,19 +73,47 @@ export class ProjectsResource {
     return envelope.data;
   }
 
-  async eventHandlers(project: string, options?: { signal?: AbortSignal }) {
+  async eventHandlers(
+    project: string,
+    query?: ListQuery,
+    options?: SignalOptions,
+  ): Promise<ApiListResponse<EventHandlerRecord>>;
+  async eventHandlers(
+    project: string,
+    options?: SignalOptions,
+  ): Promise<ApiListResponse<EventHandlerRecord>>;
+  async eventHandlers(
+    project: string,
+    queryOrOptions?: ListQuery | SignalOptions,
+    options?: SignalOptions,
+  ): Promise<ApiListResponse<EventHandlerRecord>> {
+    const { query, signal } = splitListArgs(queryOrOptions, options);
     return this.http.requestList<EventHandlerRecord>(
       "GET",
       `${this.prefix}/projects/${enc(project)}/event-handlers`,
-      { signal: options?.signal },
+      { query, signal },
     );
   }
 
-  async schedules(project: string, options?: { signal?: AbortSignal }) {
+  async schedules(
+    project: string,
+    query?: ListQuery,
+    options?: SignalOptions,
+  ): Promise<ApiListResponse<ScheduleRecord>>;
+  async schedules(
+    project: string,
+    options?: SignalOptions,
+  ): Promise<ApiListResponse<ScheduleRecord>>;
+  async schedules(
+    project: string,
+    queryOrOptions?: ListQuery | SignalOptions,
+    options?: SignalOptions,
+  ): Promise<ApiListResponse<ScheduleRecord>> {
+    const { query, signal } = splitListArgs(queryOrOptions, options);
     return this.http.requestList<ScheduleRecord>(
       "GET",
       `${this.prefix}/projects/${enc(project)}/schedules`,
-      { signal: options?.signal },
+      { query, signal },
     );
   }
 }

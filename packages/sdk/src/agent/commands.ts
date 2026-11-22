@@ -39,7 +39,7 @@ export function parseSlashCommand(
     const match = SLASH_RE.exec(trimmed);
     const name = (match?.[1] ?? "").toLowerCase();
     const arg = (match?.[2] ?? "").trim();
-    const spec = commands[name];
+    const spec = Object.hasOwn(commands, name) ? commands[name] : undefined;
 
     if (spec) {
       const payload: Record<string, unknown> = { command: name };

@@ -2,7 +2,8 @@ import type { AgentEventDataInput } from "../types.js";
 
 /** Strip a transport prefix (`web:user:abc` → `abc`). */
 export function bareId(value: string): string {
-  return value.replace(/^[^:]+:/, "");
+  const idx = value.lastIndexOf(":");
+  return idx === -1 ? value : value.slice(idx + 1);
 }
 
 export interface WebMessageIds {
@@ -39,12 +40,12 @@ export function buildWebMessageIds(input: {
 /** Build the standard agent `event_data` envelope (identity + attachments + payload). */
 export function buildAgentEventData(input: AgentEventDataInput): Record<string, unknown> {
   const data: Record<string, unknown> = {
+    ...(input.payload ?? {}),
     session_id: input.session_id,
     user_id: input.user_id,
     user_name: input.user_name ?? "User",
     message_id: input.message_id ?? `web:${Date.now()}`,
     timestamp: input.timestamp ?? Math.floor(Date.now() / 1000),
-    ...(input.payload ?? {}),
   };
 
   if (input.metadata && Object.keys(input.metadata).length > 0) {

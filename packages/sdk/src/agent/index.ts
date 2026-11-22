@@ -7,6 +7,7 @@ export {
   buildAgentEventData,
   buildWebMessageIds,
   bareId,
+  type WebMessageIds,
 } from "./event-data.js";
 
 export {
@@ -14,6 +15,7 @@ export {
   type CommandSpec,
   type CommandMap,
   type ParsedCommand,
+  type ParseSlashCommandOptions,
 } from "./commands.js";
 
 export {

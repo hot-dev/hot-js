@@ -1,11 +1,13 @@
 import type { HttpClient } from "../http.js";
+import { enc } from "../path.js";
 import type {
+  ApiListResponse,
   ContextVariableRecord,
   CreateContextVariableRequest,
+  ListQuery,
   UpdateContextVariableRequest,
 } from "../types.js";
-
-const enc = encodeURIComponent;
+import { splitListArgs, type SignalOptions } from "./list-args.js";
 
 export class ContextResource {
   /**
@@ -14,11 +16,25 @@ export class ContextResource {
    */
   constructor(private readonly http: HttpClient, private readonly prefix = "") {}
 
-  async list(project: string, options?: { signal?: AbortSignal }) {
+  async list(
+    project: string,
+    query?: ListQuery,
+    options?: SignalOptions,
+  ): Promise<ApiListResponse<ContextVariableRecord>>;
+  async list(
+    project: string,
+    options?: SignalOptions,
+  ): Promise<ApiListResponse<ContextVariableRecord>>;
+  async list(
+    project: string,
+    queryOrOptions?: ListQuery | SignalOptions,
+    options?: SignalOptions,
+  ): Promise<ApiListResponse<ContextVariableRecord>> {
+    const { query, signal } = splitListArgs(queryOrOptions, options);
     return this.http.requestList<ContextVariableRecord>(
       "GET",
       `${this.prefix}/projects/${enc(project)}/context`,
-      { signal: options?.signal },
+      { query, signal },
     );
   }
 

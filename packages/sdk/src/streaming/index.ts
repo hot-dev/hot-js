@@ -10,9 +10,15 @@ export type {
   StreamDataEvent,
   StreamCompleteEvent,
   StreamEvent,
+  TaskUpdateEvent,
   UnknownStreamEvent,
 } from "./types.js";
 
 export { isRunTerminalEvent, isStreamEvent, toStreamEvent } from "./types.js";
-export { consumeSseBlocks, consumeSseResponse, StreamIdleError } from "./sse.js";
-export { waitForRunResult, type WaitForRunOptions } from "./wait.js";
+export {
+  consumeSseBlocks,
+  consumeSseResponse,
+  StreamIdleError,
+  type ConsumeSseOptions,
+} from "./sse.js";
+export { HotRunError, waitForRunResult, type WaitForRunOptions } from "./wait.js";

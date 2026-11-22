@@ -18,10 +18,12 @@ jobs:
     name: Publish to npm
     if: github.repository == 'hot-dev/hot-js'
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Setup Node
         uses: actions/setup-node@v7
@@ -40,17 +42,32 @@ jobs:
 
       - name: Validate release tag
         id: version
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
         run: |
           VERSION=$(node -p "require('./packages/sdk/package.json').version")
           TAG_NAME="v${VERSION}"
 
-          if [[ "${{ github.ref_type }}" == "tag" && "${{ github.ref_name }}" != "$TAG_NAME" ]]; then
-            echo "::error::Tag ${{ github.ref_name }} does not match @hot-dev/sdk package version (${TAG_NAME})"
+          if [[ "$REF_TYPE" == "tag" && "$REF_NAME" != "$TAG_NAME" ]]; then
+            echo "::error::Tag ${REF_NAME} does not match @hot-dev/sdk package version (${TAG_NAME})"
             exit 1
           fi
 
-          if [[ "${{ github.ref_type }}" != "tag" ]]; then
+          if [[ "$REF_TYPE" != "tag" ]]; then
             echo "::error::Release workflow must run from a version tag (${TAG_NAME})"
+            exit 1
+          fi
+
+          SRC_VERSION=$(node -e '
+            const fs = require("node:fs");
+            const match = fs.readFileSync("./packages/sdk/src/version.ts", "utf8").match(/VERSION\s*=\s*"([^"]+)"/);
+            if (!match) process.exit(1);
+            process.stdout.write(match[1]);
+          ')
+
+          if [[ "$SRC_VERSION" != "$VERSION" ]]; then
+            echo "::error::packages/sdk/src/version.ts (${SRC_VERSION}) does not match packages/sdk/package.json (${VERSION})"
             exit 1
           fi
 

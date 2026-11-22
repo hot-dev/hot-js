@@ -1,6 +1,6 @@
 import type { HotClient } from "../client.js";
 import { isHotApiError } from "../errors.js";
-import { RunCorrelator } from "../streaming/durable.js";
+import { MAX_SSE_BUFFER_BYTES, SseParser, type SseBlock } from "../streaming/sse.js";
 import { isRunTerminalEvent, toStreamEvent } from "../streaming/types.js";
 import type { SubscribeWithEventRequest } from "../types.js";
 
@@ -58,6 +58,8 @@ export interface CreateHotProxyOptions {
   allowStreamId?: boolean | ((streamId: string, request: Request) => boolean | Promise<boolean>);
   /** Called when HOT_API_KEY (or equivalent) is missing. */
   onMissingToken?: () => Response;
+  /** Maximum uncommitted SSE event buffer size in bytes for continued-stream filtering. Defaults to 16 MiB. */
+  maxSseBufferBytes?: number;
 }
 
 /** The client a request is proxied with, or a function choosing it per request. */
@@ -149,9 +151,13 @@ export function createHotProxyHandler(
       });
     } catch (error) {
       if (isHotApiError(error)) {
-        return jsonError(error.status, error.message);
+        const status = Number.isInteger(error.status) && error.status >= 400 && error.status <= 599
+          ? error.status
+          : 502;
+        const message = status >= 500 ? "Upstream Hot API error" : error.message;
+        return jsonError(status, message);
       }
-      return jsonError(502, error instanceof Error ? error.message : "Failed to reach Hot runtime");
+      return jsonError(502, "Failed to reach Hot runtime");
     }
 
     if (!upstream.body) {
@@ -161,7 +167,7 @@ export function createHotProxyHandler(
     // A new stream holds only what this request started; a continued stream
     // may carry other requests' runs, so it is filtered to this event's runs.
     const responseBody = event.stream_id
-      ? upstream.body.pipeThrough(publishedEventFilter())
+      ? upstream.body.pipeThrough(publishedEventFilter(options.maxSseBufferBytes))
       : upstream.body;
 
     return new Response(responseBody, {
@@ -169,7 +175,6 @@ export function createHotProxyHandler(
       headers: {
         "Content-Type": "text/event-stream; charset=utf-8",
         "Cache-Control": "no-cache, no-transform",
-        Connection: "keep-alive",
         "X-Accel-Buffering": "no",
       },
     });
@@ -194,6 +199,7 @@ export { createHotProxyHandler as createHotProxyRoute };
 
 const RESERVED_PREFIX = "hot:";
 const MAX_HELD_BLOCKS = 1_000;
+const MAX_ORPHAN_RUNS = 1_000;
 
 function eventTypeMatcher(policy: ProxyEventTypePolicy): (eventType: string, request: Request) => boolean {
   if (typeof policy === "function") {
@@ -234,21 +240,36 @@ function jsonError(status: number, error: string): Response {
   });
 }
 
+interface OrphanRunRef {
+  runId: string;
+  runType: string | undefined;
+  retryRunId: string | undefined;
+}
+
 /**
  * Pass through only the SSE blocks that belong to the event this request
- * published: `event:published`, the lifecycle events of its runs (and their
- * retries), their `stream:data`, their tasks' `task:update`, `stream:complete`
- * and keepalive comments. Blocks of runs not yet identified are held, because
- * chunks can precede `run:start` and a retry can precede its origin run.
+ * published: `event:published`, the lifecycle events of ALL its handler runs
+ * (supporting multi-handler fan-out and retries via `origin_run_id` /
+ * `retry_run_id`), their `stream:data`, their tasks' `task:update`,
+ * `stream:complete`, and keepalive comments. Blocks of runs not yet identified
+ * (early chunks, early `task:update`, or retries preceding their origin) are
+ * held up to `MAX_HELD_BLOCKS` until their run correlates.
  */
-function publishedEventFilter(): TransformStream<Uint8Array, Uint8Array> {
+function publishedEventFilter(maxBufferBytes = MAX_SSE_BUFFER_BYTES): TransformStream<Uint8Array, Uint8Array> {
   const decoder = new TextDecoder();
   const encoder = new TextEncoder();
-  const correlator = new RunCorrelator();
-  // Blocks of runs not yet identified, bounded like the SDK's own buffer.
+  const parser = new SseParser(maxBufferBytes);
+
+  let eventId: string | undefined;
+  // All correlated run IDs mapped to their run_type (never stops after first run finishes).
+  const correlatedRuns = new Map<string, string | undefined>();
+  // Untied candidate retry runs keyed by origin_run_id.
+  const orphanRuns = new Map<string, OrphanRunRef[]>();
+  let orphanCount = 0;
+
+  // Held blocks keyed by the run_id they are waiting on (stream:data, task:update, orphan run:*).
   const held = new Map<string, string[]>();
   let heldCount = 0;
-  let buffer = "";
 
   const hold = (runId: string, block: string) => {
     const queue = held.get(runId) ?? [];
@@ -261,10 +282,51 @@ function publishedEventFilter(): TransformStream<Uint8Array, Uint8Array> {
       if (blocks.length === 0) held.delete(oldest);
     }
   };
+
+  const addOrphanRun = (originRunId: string, ref: OrphanRunRef) => {
+    const queue = orphanRuns.get(originRunId) ?? [];
+    queue.push(ref);
+    orphanRuns.set(originRunId, queue);
+    if (++orphanCount > MAX_ORPHAN_RUNS) {
+      const [oldest, refs] = orphanRuns.entries().next().value as [string, OrphanRunRef[]];
+      refs.shift();
+      orphanCount -= 1;
+      if (refs.length === 0) orphanRuns.delete(oldest);
+    }
+  };
+
+  const correlate = (runId: string, runType: string | undefined, retryRunId?: string) => {
+    const pending: Array<{ runId: string; runType: string | undefined; retryRunId?: string }> = [
+      { runId, runType, retryRunId },
+    ];
+    while (pending.length > 0) {
+      const current = pending.shift()!;
+      const existing = correlatedRuns.has(current.runId);
+      if (!existing) {
+        correlatedRuns.set(current.runId, current.runType);
+      } else if (correlatedRuns.get(current.runId) === undefined && current.runType !== undefined) {
+        correlatedRuns.set(current.runId, current.runType);
+      }
+      if (current.retryRunId && !correlatedRuns.has(current.retryRunId)) {
+        pending.push({ runId: current.retryRunId, runType: current.runType });
+      }
+      const waiting = orphanRuns.get(current.runId);
+      if (waiting) {
+        orphanRuns.delete(current.runId);
+        orphanCount -= waiting.length;
+        for (const child of waiting) {
+          if (child.runType === current.runType) {
+            pending.push(child);
+          }
+        }
+      }
+    }
+  };
+
   const release = (): string[] => {
     const out: string[] = [];
     for (const [runId, blocks] of [...held]) {
-      if (!correlator.isCorrelated(runId)) continue;
+      if (!correlatedRuns.has(runId)) continue;
       held.delete(runId);
       heldCount -= blocks.length;
       out.push(...blocks);
@@ -272,15 +334,18 @@ function publishedEventFilter(): TransformStream<Uint8Array, Uint8Array> {
     return out;
   };
 
-  const decide = (block: string): string[] => {
-    const data = block.split("\n")
-      .filter((line) => line.startsWith("data:"))
-      .map((line) => line.slice(line.startsWith("data: ") ? 6 : 5))
-      .join("");
-    if (!data) return [block];
+  const decide = (block: SseBlock): string[] => {
+    const blockText = block.lines.join("\n");
+    if (block.data === null) {
+      // Pass through SSE keepalive comment blocks (`: ...`), ignore non-data blocks.
+      return block.lines.length > 0 && block.lines.every((line) => line.startsWith(":"))
+        ? [blockText]
+        : [];
+    }
+
     let parsed: unknown;
     try {
-      parsed = JSON.parse(data);
+      parsed = JSON.parse(block.data);
     } catch {
       return [];
     }
@@ -288,52 +353,74 @@ function publishedEventFilter(): TransformStream<Uint8Array, Uint8Array> {
     if (!event) return [];
     switch (event.type) {
       case "event:published":
-        if (correlator.eventId === undefined) correlator.eventId = event.event_id;
-        return [block];
+        if (eventId === undefined && event.event_id) eventId = event.event_id;
+        return [blockText];
       case "stream:complete":
       case "keepalive":
-        return [block];
+        return [blockText];
       case "stream:data": {
         const runId = event.run_id;
         if (!runId) return [];
-        if (correlator.isCorrelated(runId)) return [block];
-        hold(runId, block);
+        if (correlatedRuns.has(runId)) return [blockText];
+        hold(runId, blockText);
         return [];
       }
       case "task:update": {
         const origin = event.task.origin_run_id ?? event.task.run_id ?? undefined;
-        return correlator.isCorrelated(origin ?? undefined) ? [block] : [];
+        if (!origin) return [];
+        if (correlatedRuns.has(origin)) return [blockText];
+        hold(origin, blockText);
+        return [];
       }
       default: {
         if (event.type !== "run:start" && !isRunTerminalEvent(event)) return [];
-        const runId = event.run?.run_id;
-        if (!runId) return [];
-        correlator.observe(event);
-        if (!correlator.isCorrelated(runId)) {
-          // Possibly a retry whose origin run is not identified yet.
-          if (event.run?.origin_run_id) hold(runId, block);
+        const run = event.run;
+        const runId = run?.run_id;
+        if (!run || !runId) return [];
+
+        const retryRunId = event.type === "run:fail" && typeof event.retry_run_id === "string" && event.retry_run_id
+          ? event.retry_run_id
+          : undefined;
+        const originType = run.origin_run_id ? correlatedRuns.get(run.origin_run_id) : undefined;
+        const tied = correlatedRuns.has(runId)
+          || (eventId !== undefined && run.event_id === eventId)
+          || (run.origin_run_id !== null
+            && run.origin_run_id !== undefined
+            && correlatedRuns.has(run.origin_run_id)
+            && originType === run.run_type);
+
+        if (!tied) {
+          if (run.origin_run_id) {
+            addOrphanRun(run.origin_run_id, { runId, runType: run.run_type, retryRunId });
+            hold(runId, blockText);
+          }
           return [];
         }
-        return [...release(), block];
+
+        correlate(runId, run.run_type, retryRunId);
+        return [...release(), blockText];
       }
     }
   };
 
   return new TransformStream<Uint8Array, Uint8Array>({
     transform(chunk, controller) {
-      buffer += decoder.decode(chunk, { stream: true });
-      let idx = buffer.indexOf("\n\n");
-      while (idx !== -1) {
-        const block = buffer.slice(0, idx);
-        buffer = buffer.slice(idx + 2);
+      const text = decoder.decode(chunk, { stream: true });
+      for (const block of parser.push(text)) {
         for (const out of decide(block)) controller.enqueue(encoder.encode(`${out}\n\n`));
-        idx = buffer.indexOf("\n\n");
       }
     },
     flush(controller) {
-      buffer += decoder.decode();
-      if (buffer.trim()) {
-        for (const out of decide(buffer)) controller.enqueue(encoder.encode(`${out}\n\n`));
+      const extra = decoder.decode();
+      if (extra) {
+        for (const block of parser.push(extra)) {
+          for (const out of decide(block)) controller.enqueue(encoder.encode(`${out}\n\n`));
+        }
+      }
+      const tail = parser.flush();
+      // Do not emit truncated non-`data:` blocks (e.g. a partial `event:` line) on EOF.
+      if (tail && tail.data !== null) {
+        for (const out of decide(tail)) controller.enqueue(encoder.encode(`${out}\n\n`));
       }
     },
   });
